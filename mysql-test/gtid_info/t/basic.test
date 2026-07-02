@@ -1,0 +1,165 @@
+--source include/have_log_bin.inc
+--source include/have_binlog_format_row.inc
+
+SELECT PLUGIN_STATUS
+  FROM INFORMATION_SCHEMA.PLUGINS
+ WHERE PLUGIN_NAME='gtid_info';
+
+CREATE TABLE t1 (a INT PRIMARY KEY, b VARCHAR(2000));
+INSERT INTO t1 VALUES (1, REPEAT('x', 1000));
+SET @gtid= @@last_gtid;
+FLUSH NO_WRITE_TO_BINLOG BINARY LOGS;
+
+FLUSH NO_WRITE_TO_BINLOG GLOBAL STATUS;
+SET @info= GTID_INFO(@gtid);
+
+SELECT JSON_VALID(@info) AS valid_json;
+SELECT JSON_VALUE(@info, '$.gtid') = @gtid AS gtid_matches;
+SET @gtid_commit_time=
+  FROM_UNIXTIME(CAST(JSON_VALUE(@info, '$.commit_timestamp') AS UNSIGNED));
+SET @gtid_before_commit_time=
+  FROM_UNIXTIME(CAST(JSON_VALUE(@info, '$.commit_timestamp') AS UNSIGNED) - 1);
+SELECT LOCATE(@gtid, GTID_AT(@gtid_commit_time)) > 0 AS gtid_at_includes_gtid;
+SELECT LOCATE(@gtid, GTID_AT(@gtid_before_commit_time)) = 0
+       AS gtid_at_before_excludes_gtid;
+SELECT JSON_VALUE(@info, '$.domain_id') = SUBSTRING_INDEX(@gtid, '-', 1)
+       AS domain_matches;
+SELECT JSON_VALUE(@info, '$.server_id') =
+       SUBSTRING_INDEX(SUBSTRING_INDEX(@gtid, '-', 2), '-', -1)
+       AS server_matches;
+SELECT JSON_VALUE(@info, '$.sequence_no') =
+       SUBSTRING_INDEX(@gtid, '-', -1)
+       AS sequence_matches;
+SELECT JSON_VALUE(@info, '$.present') AS present;
+SELECT LENGTH(JSON_VALUE(@info, '$.binlog_server_version')) > 0
+       AS binlog_server_version_ok;
+SELECT JSON_VALUE(@info, '$.start_position') > 0 AS start_ok;
+SELECT JSON_VALUE(@info, '$.end_position') >=
+       JSON_VALUE(@info, '$.start_position') AS end_ok;
+SELECT JSON_VALUE(@info, '$.size') > 0 AS size_ok;
+SELECT JSON_VALUE(@info, '$.event_count') > 0 AS event_count_ok;
+SELECT JSON_VALUE(@info, '$.commit_timestamp') > 0 AS commit_ts_ok;
+SELECT JSON_VALUE(@info, '$.last_event_timestamp') >=
+       JSON_VALUE(@info, '$.commit_timestamp') AS last_ts_ok;
+SELECT JSON_EXTRACT(@info, '$.compression.present') = 'true'
+       AS compression_present_ok;
+SELECT JSON_VALUE(@info, '$.compression.event_count') > 0
+       AS compression_count_ok;
+SELECT JSON_VALUE(@info, '$.compression.row_event_count') > 0
+       AS compression_row_count_ok;
+SELECT JSON_EXTRACT(@info, '$.row_image_inference.has_row_events') = 'true'
+       AS has_row_events_ok;
+SELECT JSON_VALUE(@info, '$.row_image_inference.row_event_count') > 0
+       AS row_event_count_ok;
+SELECT JSON_VALUE(@info, '$.row_image_inference.max_column_count') > 0
+       AS max_column_count_ok;
+SELECT JSON_VALUE(@info, '$.row_image_inference.after_columns_logged_total') > 0
+       AS after_columns_logged_ok;
+SELECT JSON_VALUE(@info, '$.row_image_inference.complete_row_events') +
+       JSON_VALUE(@info, '$.row_image_inference.partial_row_events') =
+       JSON_VALUE(@info, '$.row_image_inference.row_event_count')
+       AS row_image_counts_ok;
+
+SET @missing_gtid= '0-1-999999999';
+SET @missing= GTID_INFO(@missing_gtid);
+SELECT JSON_VALID(@missing) AS missing_valid_json;
+SELECT JSON_VALUE(@missing, '$.gtid') = @missing_gtid AS missing_gtid_matches;
+SELECT JSON_VALUE(@missing, '$.sequence_no') = 999999999
+       AS missing_sequence_matches;
+SELECT JSON_EXTRACT(@missing, '$.present') = 'false' AS missing_present_ok;
+
+CREATE TABLE t2 (
+  a INT PRIMARY KEY,
+  b VARCHAR(20),
+  c DECIMAL(8,2),
+  d DATE,
+  e DATETIME(6),
+  f TIME(3),
+  g BIT(4),
+  h ENUM('x','y'),
+  i SET('a','b'),
+  j BLOB
+);
+INSERT INTO t2 VALUES
+  (1, 'one', 12.34, '2026-06-30', '2026-06-30 12:34:56.123456',
+   '01:02:03.123', b'1010', 'y', 'a,b', 'blob-one');
+SET @insert_gtid= @@last_gtid;
+UPDATE t2 SET b='two', c=56.78, j='blob-two' WHERE a=1;
+SET @update_gtid= @@last_gtid;
+DELETE FROM t2 WHERE a=1;
+SET @delete_gtid= @@last_gtid;
+
+SET @insert_flashback= GTID_FLASHBACK(@insert_gtid);
+SELECT LOCATE('DELETE FROM `test`.`t2`', @insert_flashback) > 0
+       AS insert_becomes_delete;
+SELECT LOCATE('`a` <=> 1', @insert_flashback) > 0 AS insert_has_pk_value;
+SELECT LOCATE('`b` <=> ''one''', @insert_flashback) > 0 AS insert_has_old_value;
+SELECT LOCATE('`c` <=> 12.34', @insert_flashback) > 0 AS insert_has_decimal;
+SELECT LOCATE('`d` <=> ''2026-06-30''', @insert_flashback) > 0
+       AS insert_has_date;
+SELECT LOCATE('`g` <=> b''1010''', @insert_flashback) > 0 AS insert_has_bit;
+
+SET @update_flashback= GTID_FLASHBACK(@update_gtid);
+SELECT LOCATE('UPDATE `test`.`t2` SET `a`=1,`b`=''one'',`c`=12.34',
+              @update_flashback) > 0 AS update_restores_old_values;
+SELECT LOCATE('WHERE `a` <=> 1 AND `b` <=> ''two'' AND `c` <=> 56.78',
+              @update_flashback) > 0
+       AS update_matches_new_values;
+
+SET @delete_flashback= GTID_FLASHBACK(@delete_gtid);
+SELECT LOCATE('INSERT INTO `test`.`t2` (`a`,`b`,`c`',
+              @delete_flashback) > 0 AS delete_has_column_list;
+SELECT LOCATE('VALUES (',
+              @delete_flashback) > 0 AS delete_becomes_insert;
+
+CREATE TABLE t3 (a INT PRIMARY KEY, b VARCHAR(20));
+INSERT INTO t3 VALUES (2, 'exec');
+SET @exec_gtid= @@last_gtid;
+SET @exec_flashback= GTID_FLASHBACK(@exec_gtid, 1);
+SELECT COUNT(*) = 0 AS execute_removed_inserted_row FROM t3 WHERE a=2;
+SELECT LOCATE('Query OK, 1 row affected', @exec_flashback) > 0
+       AS execute_reports_rows;
+SELECT LOCATE('DELETE FROM `test`.`t3`', @exec_flashback) > 0
+       AS execute_returns_sql;
+
+CREATE TABLE t4 (a INT PRIMARY KEY, b TIMESTAMP);
+INSERT INTO t4 VALUES (1, '2026-06-30 20:51:56');
+SET @timestamp_gtid= @@last_gtid;
+SET @timestamp_flashback= GTID_FLASHBACK(@timestamp_gtid);
+SELECT LOCATE('`b` <=> ''2026-06-30 20:51:56''',
+              @timestamp_flashback) > 0 AS timestamp_is_datetime_literal;
+
+CREATE TABLE t5 (a INT PRIMARY KEY, b VARCHAR(20));
+INSERT INTO t5 VALUES (1, 'keep');
+SET @flashback_to_target= @@last_gtid;
+INSERT INTO t5 VALUES (2, 'undo-2');
+INSERT INTO t5 VALUES (3, 'undo-3');
+SET @flashback_to_preview= GTID_FLASHBACK_TO(@flashback_to_target);
+SELECT COUNT(*) = 3 AS flashback_to_preview_does_not_execute FROM t5;
+SELECT LOCATE('Query OK', @flashback_to_preview) = 0
+       AS flashback_to_preview_has_no_execute_summary;
+SELECT LOCATE('DELETE FROM `test`.`t5` WHERE `a` <=> 3',
+              @flashback_to_preview) <
+       LOCATE('DELETE FROM `test`.`t5` WHERE `a` <=> 2',
+              @flashback_to_preview)
+       AS flashback_to_preview_reverses_descending;
+SET @flashback_to_sql= GTID_FLASHBACK_TO(@flashback_to_target, 1);
+SELECT COUNT(*) = 1 AS flashback_to_kept_target_state FROM t5;
+SELECT COUNT(*) = 1 AS flashback_to_kept_target_row
+  FROM t5 WHERE a=1 AND b='keep';
+SELECT LOCATE('Query OK, 2 rows affected', @flashback_to_sql) > 0
+       AS flashback_to_reports_rows;
+SELECT LOCATE('DELETE FROM `test`.`t5` WHERE `a` <=> 3',
+              @flashback_to_sql) <
+       LOCATE('DELETE FROM `test`.`t5` WHERE `a` <=> 2',
+              @flashback_to_sql)
+       AS flashback_to_reverses_descending;
+
+--error ER_INCORRECT_GTID_STATE
+SELECT GTID_INFO('not-a-gtid');
+
+DROP TABLE t1;
+DROP TABLE t2;
+DROP TABLE t3;
+DROP TABLE t4;
+DROP TABLE t5;

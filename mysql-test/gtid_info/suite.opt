@@ -1,0 +1,1 @@
+--plugin-load-add=$GTID_INFO_SO --log-bin=mysql-bin --server-id=1 --binlog-format=ROW --log-bin-compress=ON --log-bin-compress-min-len=10
