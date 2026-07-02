@@ -43,6 +43,67 @@ registration and JSON formatting.
 local binary log files. It may have been purged, may have been generated on a
 different server, or may never have existed locally.
 
+
+### Output Example
+
+```sql
+MariaDB [test]> select json_pretty(gtid_info('0-1-3'))\G
+*************************** 1. row ***************************
+json_pretty(gtid_info('0-1-3')): {
+    "gtid": "0-1-3",
+    "domain_id": 0,
+    "server_id": 1,
+    "sequence_no": 3,
+    "present": true,
+    "binlog": "./mysql-bin.000001",
+    "binlog_server_version": "13.1.0-MariaDB-log",
+    "start_position": 833,
+    "end_position": 1085,
+    "size": 252,
+    "commit_timestamp": 1783018984,
+    "last_event_timestamp": 1783018984,
+    "commit_id": 0,
+    "flags": 
+    {
+        "standalone": false,
+        "transactional": true,
+        "ddl": false,
+        "allow_parallel": true,
+        "waited": false,
+        "prepared_xa": false,
+        "completed_xa": false
+    },
+    "event_count": 5,
+    "event_types": 
+    [
+        "Xid",
+        "Table_map",
+        "Write_rows_v1",
+        "Annotate_rows",
+        "Gtid"
+    ],
+    "compression": 
+    {
+        "present": false,
+        "event_count": 0,
+        "row_event_count": 0,
+        "event_types": 
+        []
+    },
+    "row_image_inference": 
+    {
+        "has_row_events": true,
+        "row_event_count": 1,
+        "complete_row_events": 1,
+        "partial_row_events": 0,
+        "all_row_events_complete": true,
+        "max_column_count": 3,
+        "before_columns_logged_total": 3,
+        "after_columns_logged_total": 3
+    }
+}
+```
+
 ## Point-in-time GTID state
 
 `GTID_AT(datetime)` scans retained local binary logs in order and returns the
@@ -54,6 +115,35 @@ timestamp is less than or equal to the requested time.
 The datetime argument must currently use `YYYY-MM-DD HH:MM:SS` format. Because
 binlog event timestamps have one-second precision, multiple transactions in the
 same second cannot be ordered more finely by this function.
+
+
+### Output Example
+
+```sql
+MariaDB [test]> SELECT GTID_AT('2026-07-02 21:03:00');
++--------------------------------+
+| GTID_AT('2026-07-02 21:03:00') |
++--------------------------------+
+| 0-1-2                          |
++--------------------------------+
+1 row in set (0.001 sec)
+
+MariaDB [test]> SELECT GTID_AT('2026-07-02 21:03:05');
++--------------------------------+
+| GTID_AT('2026-07-02 21:03:05') |
++--------------------------------+
+| 0-1-3                          |
++--------------------------------+
+1 row in set (0.001 sec)
+
+MariaDB [test]> SELECT GTID_AT('2026-07-02 21:03:10');
++--------------------------------+
+| GTID_AT('2026-07-02 21:03:10') |
++--------------------------------+
+| 0-1-4                          |
++--------------------------------+
+1 row in set (0.001 sec)
+```
 
 ## Flashback behavior
 
