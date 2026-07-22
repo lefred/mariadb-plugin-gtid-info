@@ -2,11 +2,19 @@
 
 ![mariabd-plugin-gtid-info](logo/gtid_info.png)
 
-The `gtid_info` plugin registers four SQL functions:
+The `gtid_info` plugin registers eight SQL functions:
 
 * `GTID_INFO(gtid)` returns a JSON document describing where one MariaDB GTID
   is stored in the retained file binary logs.
 * `GTID_AT(datetime)` returns the GTID position (GTID Set) visible at a point in time.
+* `BINLOG_GTID_SET(filename)` returns the GTIDs stored in one retained binary
+  log file.
+* `BINLOG_GTID_SET_HOLES(filename)` returns GTIDs missing between the lowest
+  and highest sequence numbers stored for each domain/server pair.
+* `BINLOG_GTID_SET_RANGES(filename)` compresses consecutive GTIDs into
+  `first:last` ranges.
+* `GTID_SET_BINLOGS(gtid_set)` returns a JSON array containing every retained
+  binary log that stores at least one exact GTID from the set, oldest first.
 * `GTID_FLASHBACK(gtid)` returns a reverse row-DML script for one retained GTID.
 * `GTID_FLASHBACK_TO(gtid[, execute])` returns or executes reverse row-DML for
   the retained GTIDs after `gtid` up to the current GTID position in the same
@@ -18,6 +26,10 @@ Example:
 INSTALL SONAME 'gtid_info';
 SELECT JSON_DETAILED(GTID_INFO('0-1-123'));
 SELECT GTID_AT('2026-06-30 22:31:00');
+SELECT BINLOG_GTID_SET('mysql-bin.000001');
+SELECT BINLOG_GTID_SET_HOLES('mysql-bin.000001');
+SELECT BINLOG_GTID_SET_RANGES('mysql-bin.000001');
+SELECT GTID_SET_BINLOGS('0-1-123,1-1-45');
 SELECT GTID_FLASHBACK('0-1-123');
 SELECT GTID_FLASHBACK('0-1-123', 1);
 SELECT GTID_FLASHBACK_TO('0-1-123');
@@ -26,6 +38,37 @@ SELECT GTID_FLASHBACK_TO('0-1-123', 1);
 
 The function requires file binary logging. It is not available when binary
 logging is disabled or when an engine-backed binary log is configured.
+
+## Binlog GTID mapping
+
+`BINLOG_GTID_SET(filename)` scans the named retained file and returns its
+actual `Gtid` events as a comma-separated set in event order. The filename may
+be the value shown by `SHOW BINARY LOGS` or the indexed path returned by
+`GTID_INFO()`. Only files currently present in the server's binary-log index
+can be read.
+
+`BINLOG_GTID_SET_HOLES(filename)` groups the file's GTIDs by domain and server,
+sorts their sequence numbers, and returns every missing value between observed
+values. It does not report values before the first or after the last GTID in a
+group. An empty string means that no internal holes were found.
+
+`BINLOG_GTID_SET_RANGES(filename)` sorts GTIDs by domain, server, and sequence,
+then represents each consecutive run as `first:last`. Single values remain
+uncompressed. For example, `0-1-3,0-1-5,1-1-1,1-1-2,1-1-3` becomes
+`0-1-3,0-1-5,1-1-1:1-1-3`.
+
+`GTID_SET_BINLOGS(gtid_set)` accepts one or more exact MariaDB GTIDs and scans
+the retained files in binary-log index order. Its JSON-array result contains a
+filename once when the file stores any requested GTID. An empty array means
+none of the requested GTIDs are retained locally.
+
+```sql
+SELECT BINLOG_GTID_SET('mysql-bin.000001');
+-- 0-1-1,0-1-2,1-1-1
+
+SELECT GTID_SET_BINLOGS('0-1-2,1-1-4');
+-- ["./mysql-bin.000001","./mysql-bin.000003"]
+```
 
 ## Lookup behavior
 

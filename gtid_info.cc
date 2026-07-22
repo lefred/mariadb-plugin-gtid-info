@@ -53,6 +53,8 @@ struct Gtid_at_domain_state
 
 typedef std::vector<Gtid_at_domain_state> Gtid_at_domain_vec;
 
+typedef std::vector<rpl_gtid> Gtid_info_gtid_vec;
+
 
 
 static bool
@@ -307,6 +309,369 @@ gtid_at_append_position(String *out_str, Gtid_at_domain_vec *state)
     last_domain= (*state)[best].gtid.domain_id;
   }
   return false;
+}
+
+
+static bool
+gtid_info_same_gtid(const rpl_gtid *a, const rpl_gtid *b)
+{
+  return a->domain_id == b->domain_id &&
+         a->server_id == b->server_id &&
+         a->seq_no == b->seq_no;
+}
+
+
+static bool
+gtid_info_append_gtid_set(String *out_str, const Gtid_info_gtid_vec *gtids)
+{
+  out_str->length(0);
+  for (size_t i= 0; i < gtids->size(); ++i)
+  {
+    if ((i && out_str->append(',')) ||
+        gtid_info_json_append_uint(out_str, (*gtids)[i].domain_id) ||
+        out_str->append('-') ||
+        gtid_info_json_append_uint(out_str, (*gtids)[i].server_id) ||
+        out_str->append('-') ||
+        gtid_info_json_append_uint(out_str, (*gtids)[i].seq_no))
+      return true;
+  }
+  return false;
+}
+
+
+static bool
+gtid_info_gtid_less(const rpl_gtid *a, const rpl_gtid *b)
+{
+  if (a->domain_id != b->domain_id)
+    return a->domain_id < b->domain_id;
+  if (a->server_id != b->server_id)
+    return a->server_id < b->server_id;
+  return a->seq_no < b->seq_no;
+}
+
+
+static void
+gtid_info_sort_gtids(Gtid_info_gtid_vec *gtids)
+{
+  /* The per-file vectors are small; insertion sort avoids extra dependencies. */
+  for (size_t i= 1; i < gtids->size(); ++i)
+  {
+    rpl_gtid value= (*gtids)[i];
+    size_t j= i;
+    while (j && gtid_info_gtid_less(&value, &(*gtids)[j - 1]))
+    {
+      (*gtids)[j]= (*gtids)[j - 1];
+      --j;
+    }
+    (*gtids)[j]= value;
+  }
+}
+
+
+static bool
+gtid_info_append_plain_gtid(String *out_str, const rpl_gtid *gtid)
+{
+  return gtid_info_json_append_uint(out_str, gtid->domain_id) ||
+         out_str->append('-') ||
+         gtid_info_json_append_uint(out_str, gtid->server_id) ||
+         out_str->append('-') ||
+         gtid_info_json_append_uint(out_str, gtid->seq_no);
+}
+
+
+static bool
+gtid_info_append_gtid_holes(String *out_str, Gtid_info_gtid_vec *gtids)
+{
+  bool first= true;
+  gtid_info_sort_gtids(gtids);
+  out_str->length(0);
+
+  for (size_t i= 1; i < gtids->size(); ++i)
+  {
+    const rpl_gtid *previous= &(*gtids)[i - 1];
+    const rpl_gtid *current= &(*gtids)[i];
+    if (previous->domain_id != current->domain_id ||
+        previous->server_id != current->server_id ||
+        previous->seq_no >= current->seq_no ||
+        current->seq_no - previous->seq_no <= 1)
+      continue;
+
+    for (uint64 seq= previous->seq_no + 1; seq < current->seq_no; ++seq)
+    {
+      rpl_gtid hole= *previous;
+      hole.seq_no= seq;
+      if ((!first && out_str->append(',')) ||
+          gtid_info_append_plain_gtid(out_str, &hole))
+        return true;
+      first= false;
+    }
+  }
+  return false;
+}
+
+
+static bool
+gtid_info_append_gtid_ranges(String *out_str, Gtid_info_gtid_vec *gtids)
+{
+  bool first= true;
+  gtid_info_sort_gtids(gtids);
+  out_str->length(0);
+
+  for (size_t start= 0; start < gtids->size();)
+  {
+    size_t end= start;
+    while (end + 1 < gtids->size() &&
+           (*gtids)[end].domain_id == (*gtids)[end + 1].domain_id &&
+           (*gtids)[end].server_id == (*gtids)[end + 1].server_id &&
+           ((*gtids)[end].seq_no == (*gtids)[end + 1].seq_no ||
+            ((*gtids)[end].seq_no != ULONGLONG_MAX &&
+             (*gtids)[end].seq_no + 1 == (*gtids)[end + 1].seq_no)))
+      ++end;
+
+    /* Ignore duplicate GTIDs at the end when deciding whether this is a range. */
+    if ((!first && out_str->append(',')) ||
+        gtid_info_append_plain_gtid(out_str, &(*gtids)[start]))
+      return true;
+    if ((*gtids)[end].seq_no != (*gtids)[start].seq_no &&
+        (out_str->append(':') ||
+         gtid_info_append_plain_gtid(out_str, &(*gtids)[end])))
+      return true;
+    first= false;
+    start= end + 1;
+  }
+  return false;
+}
+
+
+static const char *
+gtid_info_basename(const char *name)
+{
+  const char *base= strrchr(name, FN_LIBCHAR);
+  return base ? base + 1 : name;
+}
+
+
+static bool
+gtid_info_log_name_matches(const char *indexed_name,
+                           const char *wanted, size_t wanted_len)
+{
+  size_t indexed_len= strlen(indexed_name);
+  if (indexed_len == wanted_len && !memcmp(indexed_name, wanted, wanted_len))
+    return true;
+
+  const char *base= gtid_info_basename(indexed_name);
+  return strlen(base) == wanted_len && !memcmp(base, wanted, wanted_len);
+}
+
+
+static int
+gtid_info_collect_file_gtids(const char *log_name, Gtid_info_gtid_vec *gtids,
+                             const Gtid_info_gtid_vec *wanted,
+                             bool *has_wanted)
+{
+  const char *errmsg;
+  IO_CACHE log;
+  File file;
+  int read_error;
+  Log_event *ev= NULL;
+  Log_event *fde_ev= NULL;
+  Format_description_log_event init_fdle(BINLOG_VERSION);
+  Format_description_log_event *fdle= &init_fdle;
+  int ret= 0;
+
+  if (has_wanted)
+    *has_wanted= false;
+  if ((file= open_binlog(&log, log_name, &errmsg)) < 0)
+    return 1;
+
+  while ((ev= Log_event::read_log_event(&log, &read_error, fdle,
+                                        opt_master_verify_checksum)))
+  {
+    Log_event_type typ= ev->get_type_code();
+    if (typ == FORMAT_DESCRIPTION_EVENT)
+    {
+      delete fde_ev;
+      fde_ev= ev;
+      fdle= static_cast<Format_description_log_event *>(ev);
+      ev= NULL;
+      continue;
+    }
+    if (typ == START_ENCRYPTION_EVENT &&
+        fdle->start_decryption(static_cast<Start_encryption_log_event *>(ev)))
+    {
+      ret= 1;
+      break;
+    }
+    if (typ == GTID_EVENT)
+    {
+      Gtid_log_event *gev= static_cast<Gtid_log_event *>(ev);
+      rpl_gtid gtid;
+      gtid.domain_id= gev->domain_id;
+      gtid.server_id= gev->server_id;
+      gtid.seq_no= gev->seq_no;
+
+      if (gtids)
+        gtids->push_back(gtid);
+      if (wanted && has_wanted)
+      {
+        for (size_t i= 0; i < wanted->size(); ++i)
+        {
+          if (gtid_info_same_gtid(&gtid, &(*wanted)[i]))
+          {
+            *has_wanted= true;
+            break;
+          }
+        }
+      }
+    }
+    delete ev;
+    ev= NULL;
+  }
+
+  delete ev;
+  delete fde_ev;
+  end_io_cache(&log);
+  mysql_file_close(file, MYF(MY_WME));
+  return ret;
+}
+
+
+static int
+binlog_gtids_for_file(const char *file_name, size_t file_name_len,
+                      Gtid_info_gtid_vec *gtids, const char *function_name)
+{
+  LOG_INFO linfo;
+  int error;
+
+  if (!mysql_bin_log.is_open())
+  {
+    my_error(ER_NO_BINARY_LOGGING, MYF(0));
+    return 1;
+  }
+  if (opt_binlog_engine_hton)
+  {
+    my_error(ER_NOT_AVAILABLE_WITH_ENGINE_BINLOG, MYF(0),
+             function_name);
+    return 1;
+  }
+
+  if ((error= mysql_bin_log.find_log_pos(&linfo, NullS, true)))
+    goto not_found;
+  for (;;)
+  {
+    if (gtid_info_log_name_matches(linfo.log_file_name, file_name,
+                                   file_name_len))
+    {
+      if (gtid_info_collect_file_gtids(linfo.log_file_name, gtids, NULL,
+                                       NULL))
+        return 1;
+      return 0;
+    }
+    error= mysql_bin_log.find_next_log(&linfo, true);
+    if (error == LOG_INFO_EOF)
+      break;
+    if (error)
+      return 1;
+  }
+
+not_found:
+  my_error(ER_KEY_NOT_FOUND, MYF(0), "binary log");
+  return 1;
+}
+
+
+static int
+binlog_gtid_set_to_string(const char *file_name, size_t file_name_len,
+                          String *out_str)
+{
+  Gtid_info_gtid_vec gtids;
+  if (binlog_gtids_for_file(file_name, file_name_len, &gtids,
+                            "BINLOG_GTID_SET()"))
+    return 1;
+  return gtid_info_append_gtid_set(out_str, &gtids);
+}
+
+
+static int
+binlog_gtid_holes_to_string(const char *file_name, size_t file_name_len,
+                            String *out_str)
+{
+  Gtid_info_gtid_vec gtids;
+  if (binlog_gtids_for_file(file_name, file_name_len, &gtids,
+                            "BINLOG_GTID_SET_HOLES()"))
+    return 1;
+  return gtid_info_append_gtid_holes(out_str, &gtids);
+}
+
+
+static int
+binlog_gtid_ranges_to_string(const char *file_name, size_t file_name_len,
+                             String *out_str)
+{
+  Gtid_info_gtid_vec gtids;
+  if (binlog_gtids_for_file(file_name, file_name_len, &gtids,
+                            "BINLOG_GTID_SET_RANGES()"))
+    return 1;
+  return gtid_info_append_gtid_ranges(out_str, &gtids);
+}
+
+
+static int
+gtid_set_binlogs_to_json(const char *gtid_str, size_t gtid_len,
+                         String *out_str)
+{
+  LOG_INFO linfo;
+  rpl_gtid *parsed;
+  uint32 count;
+  Gtid_info_gtid_vec wanted;
+  int error;
+  bool first= true;
+
+  if (!mysql_bin_log.is_open())
+  {
+    my_error(ER_NO_BINARY_LOGGING, MYF(0));
+    return 1;
+  }
+  if (opt_binlog_engine_hton)
+  {
+    my_error(ER_NOT_AVAILABLE_WITH_ENGINE_BINLOG, MYF(0),
+             "GTID_SET_BINLOGS()");
+    return 1;
+  }
+  if (!(parsed= gtid_parse_string_to_list(gtid_str, gtid_len, &count)))
+  {
+    my_error(ER_INCORRECT_GTID_STATE, MYF(0));
+    return 1;
+  }
+  for (uint32 i= 0; i < count; ++i)
+    wanted.push_back(parsed[i]);
+  my_free(parsed);
+
+  out_str->length(0);
+  if (out_str->append('['))
+    return 1;
+  error= mysql_bin_log.find_log_pos(&linfo, NullS, true);
+  if (error && error != LOG_INFO_EOF)
+    return 1;
+  while (!error)
+  {
+    bool matches;
+    if (gtid_info_collect_file_gtids(linfo.log_file_name, NULL, &wanted,
+                                     &matches))
+      return 1;
+    if (matches)
+    {
+      if ((!first && out_str->append(',')) ||
+          gtid_info_json_append_quoted(out_str, linfo.log_file_name,
+                                       strlen(linfo.log_file_name)))
+        return 1;
+      first= false;
+    }
+    error= mysql_bin_log.find_next_log(&linfo, true);
+    if (error != 0 && error != LOG_INFO_EOF)
+      return 1;
+  }
+  return out_str->append(']');
 }
 
 
@@ -992,6 +1357,250 @@ public:
 Create_func_gtid_at Create_func_gtid_at::s_singleton;
 
 
+class Item_func_binlog_gtid_set final : public Item_str_func
+{
+public:
+  Item_func_binlog_gtid_set(THD *thd, Item *arg) : Item_str_func(thd, arg) { }
+
+  bool fix_length_and_dec(THD *thd) override
+  {
+    collation.set(system_charset_info_for_i_s);
+    max_length= MAX_BLOB_WIDTH;
+    set_maybe_null();
+    return false;
+  }
+
+  String *val_str(String *str) override
+  {
+    String name_buf;
+    String *name;
+    DBUG_ASSERT(fixed());
+    name= args[0]->val_str(&name_buf);
+    if (args[0]->null_value)
+      goto null;
+#ifdef HAVE_REPLICATION
+    if (binlog_gtid_set_to_string(name->ptr(), name->length(), str))
+      goto null;
+#else
+    str->length(0);
+#endif
+    str->set_charset(system_charset_info_for_i_s);
+    null_value= false;
+    return str;
+null:
+    null_value= true;
+    return NULL;
+  }
+
+  LEX_CSTRING func_name_cstring() const override
+  {
+    static LEX_CSTRING name= { STRING_WITH_LEN("binlog_gtid_set") };
+    return name;
+  }
+
+  Item *shallow_copy(THD *thd) const override
+  { return get_item_copy<Item_func_binlog_gtid_set>(thd, this); }
+};
+
+
+class Create_func_binlog_gtid_set final : public Create_func_arg1
+{
+public:
+  Item *create_1_arg(THD *thd, Item *arg1) override
+  {
+    thd->lex->set_stmt_unsafe(LEX::BINLOG_STMT_UNSAFE_SYSTEM_FUNCTION);
+    return new (thd->mem_root) Item_func_binlog_gtid_set(thd, arg1);
+  }
+  static Create_func_binlog_gtid_set s_singleton;
+};
+
+Create_func_binlog_gtid_set Create_func_binlog_gtid_set::s_singleton;
+
+
+class Item_func_binlog_gtid_set_holes final : public Item_str_func
+{
+public:
+  Item_func_binlog_gtid_set_holes(THD *thd, Item *arg)
+    : Item_str_func(thd, arg) { }
+
+  bool fix_length_and_dec(THD *thd) override
+  {
+    collation.set(system_charset_info_for_i_s);
+    max_length= MAX_BLOB_WIDTH;
+    set_maybe_null();
+    return false;
+  }
+
+  String *val_str(String *str) override
+  {
+    String name_buf;
+    String *name;
+    DBUG_ASSERT(fixed());
+    name= args[0]->val_str(&name_buf);
+    if (args[0]->null_value)
+      goto null;
+#ifdef HAVE_REPLICATION
+    if (binlog_gtid_holes_to_string(name->ptr(), name->length(), str))
+      goto null;
+#else
+    str->length(0);
+#endif
+    str->set_charset(system_charset_info_for_i_s);
+    null_value= false;
+    return str;
+null:
+    null_value= true;
+    return NULL;
+  }
+
+  LEX_CSTRING func_name_cstring() const override
+  {
+    static LEX_CSTRING name= { STRING_WITH_LEN("binlog_gtid_set_holes") };
+    return name;
+  }
+
+  Item *shallow_copy(THD *thd) const override
+  { return get_item_copy<Item_func_binlog_gtid_set_holes>(thd, this); }
+};
+
+
+class Create_func_binlog_gtid_set_holes final : public Create_func_arg1
+{
+public:
+  Item *create_1_arg(THD *thd, Item *arg1) override
+  {
+    thd->lex->set_stmt_unsafe(LEX::BINLOG_STMT_UNSAFE_SYSTEM_FUNCTION);
+    return new (thd->mem_root) Item_func_binlog_gtid_set_holes(thd, arg1);
+  }
+  static Create_func_binlog_gtid_set_holes s_singleton;
+};
+
+Create_func_binlog_gtid_set_holes
+  Create_func_binlog_gtid_set_holes::s_singleton;
+
+
+class Item_func_binlog_gtid_set_ranges final : public Item_str_func
+{
+public:
+  Item_func_binlog_gtid_set_ranges(THD *thd, Item *arg)
+    : Item_str_func(thd, arg) { }
+
+  bool fix_length_and_dec(THD *thd) override
+  {
+    collation.set(system_charset_info_for_i_s);
+    max_length= MAX_BLOB_WIDTH;
+    set_maybe_null();
+    return false;
+  }
+
+  String *val_str(String *str) override
+  {
+    String name_buf;
+    String *name;
+    DBUG_ASSERT(fixed());
+    name= args[0]->val_str(&name_buf);
+    if (args[0]->null_value)
+      goto null;
+#ifdef HAVE_REPLICATION
+    if (binlog_gtid_ranges_to_string(name->ptr(), name->length(), str))
+      goto null;
+#else
+    str->length(0);
+#endif
+    str->set_charset(system_charset_info_for_i_s);
+    null_value= false;
+    return str;
+null:
+    null_value= true;
+    return NULL;
+  }
+
+  LEX_CSTRING func_name_cstring() const override
+  {
+    static LEX_CSTRING name= { STRING_WITH_LEN("binlog_gtid_set_ranges") };
+    return name;
+  }
+
+  Item *shallow_copy(THD *thd) const override
+  { return get_item_copy<Item_func_binlog_gtid_set_ranges>(thd, this); }
+};
+
+
+class Create_func_binlog_gtid_set_ranges final : public Create_func_arg1
+{
+public:
+  Item *create_1_arg(THD *thd, Item *arg1) override
+  {
+    thd->lex->set_stmt_unsafe(LEX::BINLOG_STMT_UNSAFE_SYSTEM_FUNCTION);
+    return new (thd->mem_root) Item_func_binlog_gtid_set_ranges(thd, arg1);
+  }
+  static Create_func_binlog_gtid_set_ranges s_singleton;
+};
+
+Create_func_binlog_gtid_set_ranges
+  Create_func_binlog_gtid_set_ranges::s_singleton;
+
+
+class Item_func_gtid_set_binlogs final : public Item_str_func
+{
+public:
+  Item_func_gtid_set_binlogs(THD *thd, Item *arg) : Item_str_func(thd, arg) { }
+
+  bool fix_length_and_dec(THD *thd) override
+  {
+    collation.set(system_charset_info_for_i_s);
+    max_length= MAX_BLOB_WIDTH;
+    set_maybe_null();
+    return false;
+  }
+
+  String *val_str(String *str) override
+  {
+    String gtid_buf;
+    String *gtid;
+    DBUG_ASSERT(fixed());
+    gtid= args[0]->val_str(&gtid_buf);
+    if (args[0]->null_value)
+      goto null;
+#ifdef HAVE_REPLICATION
+    if (gtid_set_binlogs_to_json(gtid->ptr(), gtid->length(), str))
+      goto null;
+#else
+    str->copy(STRING_WITH_LEN("[]"), system_charset_info_for_i_s);
+#endif
+    str->set_charset(system_charset_info_for_i_s);
+    null_value= false;
+    return str;
+null:
+    null_value= true;
+    return NULL;
+  }
+
+  LEX_CSTRING func_name_cstring() const override
+  {
+    static LEX_CSTRING name= { STRING_WITH_LEN("gtid_set_binlogs") };
+    return name;
+  }
+
+  Item *shallow_copy(THD *thd) const override
+  { return get_item_copy<Item_func_gtid_set_binlogs>(thd, this); }
+};
+
+
+class Create_func_gtid_set_binlogs final : public Create_func_arg1
+{
+public:
+  Item *create_1_arg(THD *thd, Item *arg1) override
+  {
+    thd->lex->set_stmt_unsafe(LEX::BINLOG_STMT_UNSAFE_SYSTEM_FUNCTION);
+    return new (thd->mem_root) Item_func_gtid_set_binlogs(thd, arg1);
+  }
+  static Create_func_gtid_set_binlogs s_singleton;
+};
+
+Create_func_gtid_set_binlogs Create_func_gtid_set_binlogs::s_singleton;
+
+
 static const Native_func_registry gtid_info_func_array[] =
 {
   { { STRING_WITH_LEN("GTID_INFO") }, &Create_func_gtid_info::s_singleton },
@@ -999,7 +1608,15 @@ static const Native_func_registry gtid_info_func_array[] =
     gtid_flashback_create_func() },
   { { STRING_WITH_LEN("GTID_FLASHBACK_TO") },
     gtid_flashback_to_create_func() },
-  { { STRING_WITH_LEN("GTID_AT") }, &Create_func_gtid_at::s_singleton }
+  { { STRING_WITH_LEN("GTID_AT") }, &Create_func_gtid_at::s_singleton },
+  { { STRING_WITH_LEN("BINLOG_GTID_SET") },
+    &Create_func_binlog_gtid_set::s_singleton },
+  { { STRING_WITH_LEN("BINLOG_GTID_SET_HOLES") },
+    &Create_func_binlog_gtid_set_holes::s_singleton },
+  { { STRING_WITH_LEN("BINLOG_GTID_SET_RANGES") },
+    &Create_func_binlog_gtid_set_ranges::s_singleton },
+  { { STRING_WITH_LEN("GTID_SET_BINLOGS") },
+    &Create_func_gtid_set_binlogs::s_singleton }
 };
 
 
