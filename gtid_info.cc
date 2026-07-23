@@ -323,7 +323,7 @@ gtid_info_same_gtid(const rpl_gtid *a, const rpl_gtid *b)
 
 
 static bool
-gtid_info_append_gtid_set(String *out_str, const Gtid_info_gtid_vec *gtids)
+gtid_info_append_gtid_list(String *out_str, const Gtid_info_gtid_vec *gtids)
 {
   out_str->length(0);
   for (size_t i= 0; i < gtids->size(); ++i)
@@ -568,13 +568,13 @@ not_found:
 
 
 static int
-binlog_gtid_set_to_string(const char *file_name, size_t file_name_len,
-                          String *out_str)
+binlog_gtid_list_to_string(const char *file_name, size_t file_name_len,
+                           String *out_str)
 {
   Gtid_info_gtid_vec gtids;
   if (binlog_gtids_for_file(file_name, file_name_len, &gtids))
     return 1;
-  return gtid_info_append_gtid_set(out_str, &gtids);
+  return gtid_info_append_gtid_list(out_str, &gtids);
 }
 
 
@@ -601,8 +601,8 @@ binlog_gtid_ranges_to_string(const char *file_name, size_t file_name_len,
 
 
 static int
-gtid_set_binlogs_to_json(const char *gtid_str, size_t gtid_len,
-                         String *out_str)
+gtid_list_binlogs_to_json(const char *gtid_str, size_t gtid_len,
+                          String *out_str)
 {
   Gtid_binlog_file_iterator logs(current_thd);
   rpl_gtid *parsed;
@@ -1307,10 +1307,10 @@ public:
 Create_func_gtid_at Create_func_gtid_at::s_singleton;
 
 
-class Item_func_binlog_gtid_set final : public Item_str_func
+class Item_func_binlog_gtid_list final : public Item_str_func
 {
 public:
-  Item_func_binlog_gtid_set(THD *thd, Item *arg) : Item_str_func(thd, arg) { }
+  Item_func_binlog_gtid_list(THD *thd, Item *arg) : Item_str_func(thd, arg) { }
 
   bool fix_length_and_dec(THD *thd) override
   {
@@ -1329,7 +1329,7 @@ public:
     if (args[0]->null_value)
       goto null;
 #ifdef HAVE_REPLICATION
-    if (binlog_gtid_set_to_string(name->ptr(), name->length(), str))
+    if (binlog_gtid_list_to_string(name->ptr(), name->length(), str))
       goto null;
 #else
     str->length(0);
@@ -1344,33 +1344,33 @@ null:
 
   LEX_CSTRING func_name_cstring() const override
   {
-    static LEX_CSTRING name= { STRING_WITH_LEN("binlog_gtid_set") };
+    static LEX_CSTRING name= { STRING_WITH_LEN("binlog_gtid_list") };
     return name;
   }
 
   Item *shallow_copy(THD *thd) const override
-  { return get_item_copy<Item_func_binlog_gtid_set>(thd, this); }
+  { return get_item_copy<Item_func_binlog_gtid_list>(thd, this); }
 };
 
 
-class Create_func_binlog_gtid_set final : public Create_func_arg1
+class Create_func_binlog_gtid_list final : public Create_func_arg1
 {
 public:
   Item *create_1_arg(THD *thd, Item *arg1) override
   {
     thd->lex->set_stmt_unsafe(LEX::BINLOG_STMT_UNSAFE_SYSTEM_FUNCTION);
-    return new (thd->mem_root) Item_func_binlog_gtid_set(thd, arg1);
+    return new (thd->mem_root) Item_func_binlog_gtid_list(thd, arg1);
   }
-  static Create_func_binlog_gtid_set s_singleton;
+  static Create_func_binlog_gtid_list s_singleton;
 };
 
-Create_func_binlog_gtid_set Create_func_binlog_gtid_set::s_singleton;
+Create_func_binlog_gtid_list Create_func_binlog_gtid_list::s_singleton;
 
 
-class Item_func_binlog_gtid_set_gaps final : public Item_str_func
+class Item_func_binlog_gtid_list_gaps final : public Item_str_func
 {
 public:
-  Item_func_binlog_gtid_set_gaps(THD *thd, Item *arg)
+  Item_func_binlog_gtid_list_gaps(THD *thd, Item *arg)
     : Item_str_func(thd, arg) { }
 
   bool fix_length_and_dec(THD *thd) override
@@ -1405,34 +1405,34 @@ null:
 
   LEX_CSTRING func_name_cstring() const override
   {
-    static LEX_CSTRING name= { STRING_WITH_LEN("binlog_gtid_set_gaps") };
+    static LEX_CSTRING name= { STRING_WITH_LEN("binlog_gtid_list_gaps") };
     return name;
   }
 
   Item *shallow_copy(THD *thd) const override
-  { return get_item_copy<Item_func_binlog_gtid_set_gaps>(thd, this); }
+  { return get_item_copy<Item_func_binlog_gtid_list_gaps>(thd, this); }
 };
 
 
-class Create_func_binlog_gtid_set_gaps final : public Create_func_arg1
+class Create_func_binlog_gtid_list_gaps final : public Create_func_arg1
 {
 public:
   Item *create_1_arg(THD *thd, Item *arg1) override
   {
     thd->lex->set_stmt_unsafe(LEX::BINLOG_STMT_UNSAFE_SYSTEM_FUNCTION);
-    return new (thd->mem_root) Item_func_binlog_gtid_set_gaps(thd, arg1);
+    return new (thd->mem_root) Item_func_binlog_gtid_list_gaps(thd, arg1);
   }
-  static Create_func_binlog_gtid_set_gaps s_singleton;
+  static Create_func_binlog_gtid_list_gaps s_singleton;
 };
 
-Create_func_binlog_gtid_set_gaps
-  Create_func_binlog_gtid_set_gaps::s_singleton;
+Create_func_binlog_gtid_list_gaps
+  Create_func_binlog_gtid_list_gaps::s_singleton;
 
 
-class Item_func_binlog_gtid_set_ranges final : public Item_str_func
+class Item_func_binlog_gtid_list_ranges final : public Item_str_func
 {
 public:
-  Item_func_binlog_gtid_set_ranges(THD *thd, Item *arg)
+  Item_func_binlog_gtid_list_ranges(THD *thd, Item *arg)
     : Item_str_func(thd, arg) { }
 
   bool fix_length_and_dec(THD *thd) override
@@ -1467,34 +1467,34 @@ null:
 
   LEX_CSTRING func_name_cstring() const override
   {
-    static LEX_CSTRING name= { STRING_WITH_LEN("binlog_gtid_set_ranges") };
+    static LEX_CSTRING name= { STRING_WITH_LEN("binlog_gtid_list_ranges") };
     return name;
   }
 
   Item *shallow_copy(THD *thd) const override
-  { return get_item_copy<Item_func_binlog_gtid_set_ranges>(thd, this); }
+  { return get_item_copy<Item_func_binlog_gtid_list_ranges>(thd, this); }
 };
 
 
-class Create_func_binlog_gtid_set_ranges final : public Create_func_arg1
+class Create_func_binlog_gtid_list_ranges final : public Create_func_arg1
 {
 public:
   Item *create_1_arg(THD *thd, Item *arg1) override
   {
     thd->lex->set_stmt_unsafe(LEX::BINLOG_STMT_UNSAFE_SYSTEM_FUNCTION);
-    return new (thd->mem_root) Item_func_binlog_gtid_set_ranges(thd, arg1);
+    return new (thd->mem_root) Item_func_binlog_gtid_list_ranges(thd, arg1);
   }
-  static Create_func_binlog_gtid_set_ranges s_singleton;
+  static Create_func_binlog_gtid_list_ranges s_singleton;
 };
 
-Create_func_binlog_gtid_set_ranges
-  Create_func_binlog_gtid_set_ranges::s_singleton;
+Create_func_binlog_gtid_list_ranges
+  Create_func_binlog_gtid_list_ranges::s_singleton;
 
 
-class Item_func_gtid_set_binlogs final : public Item_str_func
+class Item_func_gtid_list_binlogs final : public Item_str_func
 {
 public:
-  Item_func_gtid_set_binlogs(THD *thd, Item *arg) : Item_str_func(thd, arg) { }
+  Item_func_gtid_list_binlogs(THD *thd, Item *arg) : Item_str_func(thd, arg) { }
 
   bool fix_length_and_dec(THD *thd) override
   {
@@ -1513,7 +1513,7 @@ public:
     if (args[0]->null_value)
       goto null;
 #ifdef HAVE_REPLICATION
-    if (gtid_set_binlogs_to_json(gtid->ptr(), gtid->length(), str))
+    if (gtid_list_binlogs_to_json(gtid->ptr(), gtid->length(), str))
       goto null;
 #else
     str->copy(STRING_WITH_LEN("[]"), system_charset_info_for_i_s);
@@ -1528,27 +1528,27 @@ null:
 
   LEX_CSTRING func_name_cstring() const override
   {
-    static LEX_CSTRING name= { STRING_WITH_LEN("gtid_set_binlogs") };
+    static LEX_CSTRING name= { STRING_WITH_LEN("gtid_list_binlogs") };
     return name;
   }
 
   Item *shallow_copy(THD *thd) const override
-  { return get_item_copy<Item_func_gtid_set_binlogs>(thd, this); }
+  { return get_item_copy<Item_func_gtid_list_binlogs>(thd, this); }
 };
 
 
-class Create_func_gtid_set_binlogs final : public Create_func_arg1
+class Create_func_gtid_list_binlogs final : public Create_func_arg1
 {
 public:
   Item *create_1_arg(THD *thd, Item *arg1) override
   {
     thd->lex->set_stmt_unsafe(LEX::BINLOG_STMT_UNSAFE_SYSTEM_FUNCTION);
-    return new (thd->mem_root) Item_func_gtid_set_binlogs(thd, arg1);
+    return new (thd->mem_root) Item_func_gtid_list_binlogs(thd, arg1);
   }
-  static Create_func_gtid_set_binlogs s_singleton;
+  static Create_func_gtid_list_binlogs s_singleton;
 };
 
-Create_func_gtid_set_binlogs Create_func_gtid_set_binlogs::s_singleton;
+Create_func_gtid_list_binlogs Create_func_gtid_list_binlogs::s_singleton;
 
 
 static const Native_func_registry gtid_info_func_array[] =
@@ -1559,14 +1559,14 @@ static const Native_func_registry gtid_info_func_array[] =
   { { STRING_WITH_LEN("GTID_FLASHBACK_TO") },
     gtid_flashback_to_create_func() },
   { { STRING_WITH_LEN("GTID_AT") }, &Create_func_gtid_at::s_singleton },
-  { { STRING_WITH_LEN("BINLOG_GTID_SET") },
-    &Create_func_binlog_gtid_set::s_singleton },
-  { { STRING_WITH_LEN("BINLOG_GTID_SET_GAPS") },
-    &Create_func_binlog_gtid_set_gaps::s_singleton },
-  { { STRING_WITH_LEN("BINLOG_GTID_SET_RANGES") },
-    &Create_func_binlog_gtid_set_ranges::s_singleton },
-  { { STRING_WITH_LEN("GTID_SET_BINLOGS") },
-    &Create_func_gtid_set_binlogs::s_singleton }
+  { { STRING_WITH_LEN("BINLOG_GTID_LIST") },
+    &Create_func_binlog_gtid_list::s_singleton },
+  { { STRING_WITH_LEN("BINLOG_GTID_LIST_GAPS") },
+    &Create_func_binlog_gtid_list_gaps::s_singleton },
+  { { STRING_WITH_LEN("BINLOG_GTID_LIST_RANGES") },
+    &Create_func_binlog_gtid_list_ranges::s_singleton },
+  { { STRING_WITH_LEN("GTID_LIST_BINLOGS") },
+    &Create_func_gtid_list_binlogs::s_singleton }
 };
 
 

@@ -69,13 +69,13 @@ SELECT JSON_VALUE(@missing, '$.sequence_no') = 999999999
 SELECT JSON_EXTRACT(@missing, '$.present') = 'false' AS missing_present_ok;
 
 SET @first_binlog= JSON_VALUE(@info, '$.binlog');
-SET @first_binlog_gtids= BINLOG_GTID_SET(@first_binlog);
-SELECT LOCATE(@gtid, @first_binlog_gtids) > 0 AS binlog_gtid_set_includes_gtid;
-SELECT JSON_LENGTH(GTID_SET_BINLOGS(@gtid)) = 1
+SET @first_binlog_gtids= BINLOG_GTID_LIST(@first_binlog);
+SELECT LOCATE(@gtid, @first_binlog_gtids) > 0 AS binlog_gtid_list_includes_gtid;
+SELECT JSON_LENGTH(GTID_LIST_BINLOGS(@gtid)) = 1
        AS one_gtid_has_one_binlog;
-SELECT JSON_UNQUOTE(JSON_EXTRACT(GTID_SET_BINLOGS(@gtid), '$[0]')) =
+SELECT JSON_UNQUOTE(JSON_EXTRACT(GTID_LIST_BINLOGS(@gtid), '$[0]')) =
        @first_binlog AS matching_binlog_is_correct;
-SELECT JSON_LENGTH(GTID_SET_BINLOGS(@missing_gtid)) = 0
+SELECT JSON_LENGTH(GTID_LIST_BINLOGS(@missing_gtid)) = 0
        AS missing_gtid_has_no_binlogs;
 
 CREATE TABLE t2 (
@@ -94,8 +94,8 @@ INSERT INTO t2 VALUES
   (1, 'one', 12.34, '2026-06-30', '2026-06-30 12:34:56.123456',
    '01:02:03.123', b'1010', 'y', 'a,b', 'blob-one');
 SET @insert_gtid= @@last_gtid;
-SET @two_binlogs= GTID_SET_BINLOGS(CONCAT(@gtid, ',', @insert_gtid));
-SELECT JSON_LENGTH(@two_binlogs) = 2 AS gtid_set_has_two_binlogs;
+SET @two_binlogs= GTID_LIST_BINLOGS(CONCAT(@gtid, ',', @insert_gtid));
+SELECT JSON_LENGTH(@two_binlogs) = 2 AS gtid_list_has_two_binlogs;
 SELECT JSON_UNQUOTE(JSON_EXTRACT(@two_binlogs, '$[0]')) = @first_binlog
        AS matching_binlogs_oldest_first;
 UPDATE t2 SET b='two', c=56.78, j='blob-two' WHERE a=1;
@@ -183,9 +183,9 @@ INSERT INTO gtid_shape VALUES (4);
 SET @@SESSION.gtid_seq_no= 5;
 INSERT INTO gtid_shape VALUES (5);
 SET @shape_binlog= JSON_VALUE(GTID_INFO(@shape_gtid), '$.binlog');
-SELECT BINLOG_GTID_SET_GAPS(@shape_binlog) = '8-1-4'
+SELECT BINLOG_GTID_LIST_GAPS(@shape_binlog) = '8-1-4'
        AS binlog_gtid_gaps_ok;
-SELECT BINLOG_GTID_SET_RANGES(@shape_binlog) =
+SELECT BINLOG_GTID_LIST_RANGES(@shape_binlog) =
        '7-1-1:7-1-3,8-1-3,8-1-5' AS binlog_gtid_ranges_ok;
 SET @@SESSION.gtid_domain_id= 0;
 SET @@SESSION.gtid_seq_no= 0;

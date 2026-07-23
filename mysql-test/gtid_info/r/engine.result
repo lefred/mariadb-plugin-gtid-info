@@ -19,21 +19,21 @@ engine_gtid_info_present
 SELECT @anchor_log <> @latest_log AS engine_rotation_visible;
 engine_rotation_visible
 1
-SELECT LOCATE(@latest, BINLOG_GTID_SET(@latest_log)) > 0
-AS engine_binlog_gtid_set;
-engine_binlog_gtid_set
+SELECT LOCATE(@latest, BINLOG_GTID_LIST(@latest_log)) > 0
+AS engine_binlog_gtid_list;
+engine_binlog_gtid_list
 1
-SELECT BINLOG_GTID_SET_GAPS(@latest_log) = ''
+SELECT BINLOG_GTID_LIST_GAPS(@latest_log) = ''
        AS engine_binlog_gtid_gaps;
 engine_binlog_gtid_gaps
 1
-SELECT LOCATE(@latest, BINLOG_GTID_SET_RANGES(@latest_log)) > 0
+SELECT LOCATE(@latest, BINLOG_GTID_LIST_RANGES(@latest_log)) > 0
 AS engine_binlog_gtid_ranges;
 engine_binlog_gtid_ranges
 1
-SELECT JSON_LENGTH(GTID_SET_BINLOGS(CONCAT(@anchor, ',', @latest))) = 2
-AS engine_gtid_set_binlogs;
-engine_gtid_set_binlogs
+SELECT JSON_LENGTH(GTID_LIST_BINLOGS(CONCAT(@anchor, ',', @latest))) = 2
+AS engine_gtid_list_binlogs;
+engine_gtid_list_binlogs
 1
 SET @commit_time=
 FROM_UNIXTIME(CAST(JSON_VALUE(@latest_info, '$.commit_timestamp')
