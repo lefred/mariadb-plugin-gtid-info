@@ -9,7 +9,7 @@ The `gtid_info` plugin registers eight SQL functions:
 * `GTID_AT(datetime)` returns the GTID position (GTID Set) visible at a point in time.
 * `BINLOG_GTID_SET(filename)` returns the GTIDs stored in one retained binary
   log file.
-* `BINLOG_GTID_SET_HOLES(filename)` returns GTIDs missing between the lowest
+* `BINLOG_GTID_SET_GAPS(filename)` returns GTIDs missing between the lowest
   and highest sequence numbers stored for each domain/server pair.
 * `BINLOG_GTID_SET_RANGES(filename)` compresses consecutive GTIDs into
   `first:last` ranges.
@@ -27,7 +27,7 @@ INSTALL SONAME 'gtid_info';
 SELECT JSON_DETAILED(GTID_INFO('0-1-123'));
 SELECT GTID_AT('2026-06-30 22:31:00');
 SELECT BINLOG_GTID_SET('mysql-bin.000001');
-SELECT BINLOG_GTID_SET_HOLES('mysql-bin.000001');
+SELECT BINLOG_GTID_SET_GAPS('mysql-bin.000001');
 SELECT BINLOG_GTID_SET_RANGES('mysql-bin.000001');
 SELECT GTID_SET_BINLOGS('0-1-123,1-1-45');
 SELECT GTID_FLASHBACK('0-1-123');
@@ -47,10 +47,10 @@ be the value shown by `SHOW BINARY LOGS` or the indexed path returned by
 `GTID_INFO()`. Only files currently present in the server's binary-log index
 can be read.
 
-`BINLOG_GTID_SET_HOLES(filename)` groups the file's GTIDs by domain and server,
+`BINLOG_GTID_SET_GAPS(filename)` groups the file's GTIDs by domain and server,
 sorts their sequence numbers, and returns every missing value between observed
 values. It does not report values before the first or after the last GTID in a
-group. An empty string means that no internal holes were found.
+group. An empty string means that no internal gaps were found.
 
 `BINLOG_GTID_SET_RANGES(filename)` sorts GTIDs by domain, server, and sequence,
 then represents each consecutive run as `first:last`. Single values remain

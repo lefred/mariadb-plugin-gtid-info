@@ -183,8 +183,8 @@ INSERT INTO gtid_shape VALUES (4);
 SET @@SESSION.gtid_seq_no= 5;
 INSERT INTO gtid_shape VALUES (5);
 SET @shape_binlog= JSON_VALUE(GTID_INFO(@shape_gtid), '$.binlog');
-SELECT BINLOG_GTID_SET_HOLES(@shape_binlog) = '8-1-4'
-       AS binlog_gtid_holes_ok;
+SELECT BINLOG_GTID_SET_GAPS(@shape_binlog) = '8-1-4'
+       AS binlog_gtid_gaps_ok;
 SELECT BINLOG_GTID_SET_RANGES(@shape_binlog) =
        '7-1-1:7-1-3,8-1-3,8-1-5' AS binlog_gtid_ranges_ok;
 SET @@SESSION.gtid_domain_id= 0;

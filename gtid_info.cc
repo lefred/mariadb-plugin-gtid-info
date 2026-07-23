@@ -380,7 +380,7 @@ gtid_info_append_plain_gtid(String *out_str, const rpl_gtid *gtid)
 
 
 static bool
-gtid_info_append_gtid_holes(String *out_str, Gtid_info_gtid_vec *gtids)
+gtid_info_append_gtid_gaps(String *out_str, Gtid_info_gtid_vec *gtids)
 {
   bool first= true;
   gtid_info_sort_gtids(gtids);
@@ -398,10 +398,10 @@ gtid_info_append_gtid_holes(String *out_str, Gtid_info_gtid_vec *gtids)
 
     for (uint64 seq= previous->seq_no + 1; seq < current->seq_no; ++seq)
     {
-      rpl_gtid hole= *previous;
-      hole.seq_no= seq;
+      rpl_gtid gap= *previous;
+      gap.seq_no= seq;
       if ((!first && out_str->append(',')) ||
-          gtid_info_append_plain_gtid(out_str, &hole))
+          gtid_info_append_plain_gtid(out_str, &gap))
         return true;
       first= false;
     }
@@ -593,14 +593,14 @@ binlog_gtid_set_to_string(const char *file_name, size_t file_name_len,
 
 
 static int
-binlog_gtid_holes_to_string(const char *file_name, size_t file_name_len,
-                            String *out_str)
+binlog_gtid_gaps_to_string(const char *file_name, size_t file_name_len,
+                           String *out_str)
 {
   Gtid_info_gtid_vec gtids;
   if (binlog_gtids_for_file(file_name, file_name_len, &gtids,
-                            "BINLOG_GTID_SET_HOLES()"))
+                            "BINLOG_GTID_SET_GAPS()"))
     return 1;
-  return gtid_info_append_gtid_holes(out_str, &gtids);
+  return gtid_info_append_gtid_gaps(out_str, &gtids);
 }
 
 
@@ -1417,10 +1417,10 @@ public:
 Create_func_binlog_gtid_set Create_func_binlog_gtid_set::s_singleton;
 
 
-class Item_func_binlog_gtid_set_holes final : public Item_str_func
+class Item_func_binlog_gtid_set_gaps final : public Item_str_func
 {
 public:
-  Item_func_binlog_gtid_set_holes(THD *thd, Item *arg)
+  Item_func_binlog_gtid_set_gaps(THD *thd, Item *arg)
     : Item_str_func(thd, arg) { }
 
   bool fix_length_and_dec(THD *thd) override
@@ -1440,7 +1440,7 @@ public:
     if (args[0]->null_value)
       goto null;
 #ifdef HAVE_REPLICATION
-    if (binlog_gtid_holes_to_string(name->ptr(), name->length(), str))
+    if (binlog_gtid_gaps_to_string(name->ptr(), name->length(), str))
       goto null;
 #else
     str->length(0);
@@ -1455,28 +1455,28 @@ null:
 
   LEX_CSTRING func_name_cstring() const override
   {
-    static LEX_CSTRING name= { STRING_WITH_LEN("binlog_gtid_set_holes") };
+    static LEX_CSTRING name= { STRING_WITH_LEN("binlog_gtid_set_gaps") };
     return name;
   }
 
   Item *shallow_copy(THD *thd) const override
-  { return get_item_copy<Item_func_binlog_gtid_set_holes>(thd, this); }
+  { return get_item_copy<Item_func_binlog_gtid_set_gaps>(thd, this); }
 };
 
 
-class Create_func_binlog_gtid_set_holes final : public Create_func_arg1
+class Create_func_binlog_gtid_set_gaps final : public Create_func_arg1
 {
 public:
   Item *create_1_arg(THD *thd, Item *arg1) override
   {
     thd->lex->set_stmt_unsafe(LEX::BINLOG_STMT_UNSAFE_SYSTEM_FUNCTION);
-    return new (thd->mem_root) Item_func_binlog_gtid_set_holes(thd, arg1);
+    return new (thd->mem_root) Item_func_binlog_gtid_set_gaps(thd, arg1);
   }
-  static Create_func_binlog_gtid_set_holes s_singleton;
+  static Create_func_binlog_gtid_set_gaps s_singleton;
 };
 
-Create_func_binlog_gtid_set_holes
-  Create_func_binlog_gtid_set_holes::s_singleton;
+Create_func_binlog_gtid_set_gaps
+  Create_func_binlog_gtid_set_gaps::s_singleton;
 
 
 class Item_func_binlog_gtid_set_ranges final : public Item_str_func
@@ -1611,8 +1611,8 @@ static const Native_func_registry gtid_info_func_array[] =
   { { STRING_WITH_LEN("GTID_AT") }, &Create_func_gtid_at::s_singleton },
   { { STRING_WITH_LEN("BINLOG_GTID_SET") },
     &Create_func_binlog_gtid_set::s_singleton },
-  { { STRING_WITH_LEN("BINLOG_GTID_SET_HOLES") },
-    &Create_func_binlog_gtid_set_holes::s_singleton },
+  { { STRING_WITH_LEN("BINLOG_GTID_SET_GAPS") },
+    &Create_func_binlog_gtid_set_gaps::s_singleton },
   { { STRING_WITH_LEN("BINLOG_GTID_SET_RANGES") },
     &Create_func_binlog_gtid_set_ranges::s_singleton },
   { { STRING_WITH_LEN("GTID_SET_BINLOGS") },
