@@ -644,7 +644,10 @@ gtid_list_binlogs_to_json(const char *gtid_str, size_t gtid_len,
     }
     int error= logs.next();
     if (error != 0 && error != LOG_INFO_EOF)
+    {
+      out_str->length(0);
       return 1;
+    }
   }
   return out_str->append(']');
 }

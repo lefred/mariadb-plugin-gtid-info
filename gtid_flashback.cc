@@ -223,6 +223,70 @@ gtid_flashback_append_bit(String *str, const uchar *ptr, uint nbits)
 }
 
 
+/*
+  Check whether column 'col' of the binlog table map was declared UNSIGNED.
+
+  The SIGNEDNESS optional metadata field (Table_map_log_event::SIGNEDNESS = 1)
+  stores one bit per column, packed MSB-first within each byte: bit 7 of byte 0
+  is column 0, bit 6 of byte 0 is column 1, etc. A set bit means UNSIGNED.
+
+  Returns false when no signedness metadata is present (e.g. older binlogs),
+  preserving the pre-fix behaviour of treating all integer columns as signed.
+*/
+static bool
+gtid_flashback_col_is_unsigned(table_def *td, uint col)
+{
+  const uchar *ptr= td->optional_metadata.str;
+  size_t total= td->optional_metadata.length;
+  size_t pos= 0;
+
+  if (!ptr)
+    return false;
+
+  while (pos < total)
+  {
+    uint type= ptr[pos++];
+    if (pos >= total) break;
+
+    /* Field length uses the net_field_length variable-length encoding. */
+    uint field_len;
+    uchar first= ptr[pos];
+    if (first < 251)
+    {
+      field_len= first;
+      pos++;
+    }
+    else if (first == 252 && pos + 2 < total)
+    {
+      field_len= uint2korr(ptr + pos + 1);
+      pos+= 3;
+    }
+    else if (first == 253 && pos + 3 < total)
+    {
+      field_len= uint3korr(ptr + pos + 1);
+      pos+= 4;
+    }
+    else if (first == 254 && pos + 8 < total)
+    {
+      field_len= (uint) uint8korr(ptr + pos + 1);
+      pos+= 9;
+    }
+    else
+      break;
+
+    if (type == Table_map_log_event::SIGNEDNESS)
+    {
+      uint byte_index= col / 8;
+      if (byte_index < field_len)
+        return (ptr[pos + byte_index] >> (7 - col % 8)) & 1;
+      return false;
+    }
+    pos+= field_len;
+  }
+  return false;
+}
+
+
 static bool
 gtid_flashback_append_value(String *str, table_def *td, uint col,
                             const uchar *value, bool is_null,
@@ -246,15 +310,25 @@ gtid_flashback_append_value(String *str, table_def *td, uint col,
 
   switch (type) {
   case MYSQL_TYPE_TINY:
+    if (gtid_flashback_col_is_unsigned(td, col))
+      return gtid_info_json_append_uint(str, (ulonglong)(uchar)(*value));
     return gtid_flashback_append_ll(str, static_cast<signed char>(*value));
   case MYSQL_TYPE_SHORT:
+    if (gtid_flashback_col_is_unsigned(td, col))
+      return gtid_info_json_append_uint(str, (ulonglong)uint2korr(value));
     return gtid_flashback_append_ll(str, sint2korr(value));
   case MYSQL_TYPE_INT24:
+    if (gtid_flashback_col_is_unsigned(td, col))
+      return gtid_info_json_append_uint(str, (ulonglong)uint3korr(value));
     return gtid_flashback_append_ll(str, sint3korr(value));
   case MYSQL_TYPE_LONG:
+    if (gtid_flashback_col_is_unsigned(td, col))
+      return gtid_info_json_append_uint(str, (ulonglong)uint4korr(value));
     return gtid_flashback_append_ll(str, sint4korr(value));
 #ifdef HAVE_LONG_LONG
   case MYSQL_TYPE_LONGLONG:
+    if (gtid_flashback_col_is_unsigned(td, col))
+      return gtid_info_json_append_uint(str, (ulonglong)uint8korr(value));
     return gtid_flashback_append_ll(str, sint8korr(value));
 #endif
   case MYSQL_TYPE_FLOAT:
@@ -768,10 +842,14 @@ gtid_flashback_scan_file(THD *thd, const char *log_name, const rpl_gtid *wanted,
       if (collecting)
       {
         *found= true;
-        ret= have_rows ? gtid_flashback_emit_collected(thd, out_str, &events) : 0;
-        if (!have_rows)
+        if (have_rows)
+          ret= gtid_flashback_emit_collected(thd, out_str, &events);
+        else
+        {
           my_error(ER_NOT_SUPPORTED_YET, MYF(0),
                    "GTID_FLASHBACK() for GTID groups without row DML");
+          ret= 1;
+        }
         break;
       }
       if (gev->domain_id == wanted->domain_id &&
@@ -1180,7 +1258,23 @@ gtid_flashback_execute_sql(String *sql)
 
   while (ptr < end)
   {
-    const char *stmt_end= static_cast<const char *>(memchr(ptr, ';', end - ptr));
+    /*
+      Statements are terminated with ";\n". String literals have their
+      newlines escaped to "\\n" by gtid_info_append_sql_quoted(), so a
+      literal 0x0A byte only appears as the second byte of a ";\n"
+      statement terminator — never inside a quoted value. Searching for
+      ";\n" rather than just ";" prevents splitting on semicolons that are
+      embedded in string or blob column values.
+    */
+    const char *stmt_end= NULL;
+    for (const char *p= ptr; p + 1 < end; ++p)
+    {
+      if (p[0] == ';' && p[1] == '\n')
+      {
+        stmt_end= p;
+        break;
+      }
+    }
     const char *stmt_stop= stmt_end ? stmt_end : end;
 
     while (ptr < stmt_stop && my_isspace(system_charset_info, *ptr))
@@ -1192,7 +1286,7 @@ gtid_flashback_execute_sql(String *sql)
       ret= 1;
       break;
     }
-    ptr= stmt_end ? stmt_end + 1 : end;
+    ptr= stmt_end ? stmt_end + 2 : end;
   }
   mysql_close(mysql);
   if (!ret)

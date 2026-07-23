@@ -75,7 +75,8 @@ Gtid_binlog_reader::read(THD *thd, Format_description_log_event *fdle,
 
   m_packet.length(0);
   *read_error= m_engine_reader->read_log_event(
-    &m_packet, 0, thd->variables.max_allowed_packet + MAX_LOG_EVENT_HEADER);
+    &m_packet, 0,
+    (size_t) thd->variables.max_allowed_packet + MAX_LOG_EVENT_HEADER);
   if (*read_error)
     return NULL;
 
