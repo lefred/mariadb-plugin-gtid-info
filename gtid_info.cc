@@ -30,6 +30,7 @@
 #include "rpl_constants.h"
 #include "rpl_gtid.h"
 #include "gtid_flashback.h"
+#include "gtid_binlog_reader.h"
 
 
 #ifdef HAVE_REPLICATION
@@ -469,9 +470,7 @@ gtid_info_collect_file_gtids(const char *log_name, Gtid_info_gtid_vec *gtids,
                              const Gtid_info_gtid_vec *wanted,
                              bool *has_wanted)
 {
-  const char *errmsg;
-  IO_CACHE log;
-  File file;
+  Gtid_binlog_reader reader;
   int read_error;
   Log_event *ev= NULL;
   Log_event *fde_ev= NULL;
@@ -481,11 +480,10 @@ gtid_info_collect_file_gtids(const char *log_name, Gtid_info_gtid_vec *gtids,
 
   if (has_wanted)
     *has_wanted= false;
-  if ((file= open_binlog(&log, log_name, &errmsg)) < 0)
+  if (reader.open(current_thd, log_name))
     return 1;
 
-  while ((ev= Log_event::read_log_event(&log, &read_error, fdle,
-                                        opt_master_verify_checksum)))
+  while ((ev= reader.read(current_thd, fdle, &read_error)))
   {
     Log_event_type typ= ev->get_type_code();
     if (typ == FORMAT_DESCRIPTION_EVENT)
@@ -530,44 +528,33 @@ gtid_info_collect_file_gtids(const char *log_name, Gtid_info_gtid_vec *gtids,
 
   delete ev;
   delete fde_ev;
-  end_io_cache(&log);
-  mysql_file_close(file, MYF(MY_WME));
   return ret;
 }
 
 
 static int
 binlog_gtids_for_file(const char *file_name, size_t file_name_len,
-                      Gtid_info_gtid_vec *gtids, const char *function_name)
+                      Gtid_info_gtid_vec *gtids)
 {
-  LOG_INFO linfo;
-  int error;
+  Gtid_binlog_file_iterator logs(current_thd);
 
   if (!mysql_bin_log.is_open())
   {
     my_error(ER_NO_BINARY_LOGGING, MYF(0));
     return 1;
   }
-  if (opt_binlog_engine_hton)
-  {
-    my_error(ER_NOT_AVAILABLE_WITH_ENGINE_BINLOG, MYF(0),
-             function_name);
-    return 1;
-  }
-
-  if ((error= mysql_bin_log.find_log_pos(&linfo, NullS, true)))
+  if (!logs.valid())
     goto not_found;
   for (;;)
   {
-    if (gtid_info_log_name_matches(linfo.log_file_name, file_name,
+    if (gtid_info_log_name_matches(logs.name(), file_name,
                                    file_name_len))
     {
-      if (gtid_info_collect_file_gtids(linfo.log_file_name, gtids, NULL,
-                                       NULL))
+      if (gtid_info_collect_file_gtids(logs.name(), gtids, NULL, NULL))
         return 1;
       return 0;
     }
-    error= mysql_bin_log.find_next_log(&linfo, true);
+    int error= logs.next();
     if (error == LOG_INFO_EOF)
       break;
     if (error)
@@ -585,8 +572,7 @@ binlog_gtid_set_to_string(const char *file_name, size_t file_name_len,
                           String *out_str)
 {
   Gtid_info_gtid_vec gtids;
-  if (binlog_gtids_for_file(file_name, file_name_len, &gtids,
-                            "BINLOG_GTID_SET()"))
+  if (binlog_gtids_for_file(file_name, file_name_len, &gtids))
     return 1;
   return gtid_info_append_gtid_set(out_str, &gtids);
 }
@@ -597,8 +583,7 @@ binlog_gtid_gaps_to_string(const char *file_name, size_t file_name_len,
                            String *out_str)
 {
   Gtid_info_gtid_vec gtids;
-  if (binlog_gtids_for_file(file_name, file_name_len, &gtids,
-                            "BINLOG_GTID_SET_GAPS()"))
+  if (binlog_gtids_for_file(file_name, file_name_len, &gtids))
     return 1;
   return gtid_info_append_gtid_gaps(out_str, &gtids);
 }
@@ -609,8 +594,7 @@ binlog_gtid_ranges_to_string(const char *file_name, size_t file_name_len,
                              String *out_str)
 {
   Gtid_info_gtid_vec gtids;
-  if (binlog_gtids_for_file(file_name, file_name_len, &gtids,
-                            "BINLOG_GTID_SET_RANGES()"))
+  if (binlog_gtids_for_file(file_name, file_name_len, &gtids))
     return 1;
   return gtid_info_append_gtid_ranges(out_str, &gtids);
 }
@@ -620,22 +604,15 @@ static int
 gtid_set_binlogs_to_json(const char *gtid_str, size_t gtid_len,
                          String *out_str)
 {
-  LOG_INFO linfo;
+  Gtid_binlog_file_iterator logs(current_thd);
   rpl_gtid *parsed;
   uint32 count;
   Gtid_info_gtid_vec wanted;
-  int error;
   bool first= true;
 
   if (!mysql_bin_log.is_open())
   {
     my_error(ER_NO_BINARY_LOGGING, MYF(0));
-    return 1;
-  }
-  if (opt_binlog_engine_hton)
-  {
-    my_error(ER_NOT_AVAILABLE_WITH_ENGINE_BINLOG, MYF(0),
-             "GTID_SET_BINLOGS()");
     return 1;
   }
   if (!(parsed= gtid_parse_string_to_list(gtid_str, gtid_len, &count)))
@@ -650,24 +627,22 @@ gtid_set_binlogs_to_json(const char *gtid_str, size_t gtid_len,
   out_str->length(0);
   if (out_str->append('['))
     return 1;
-  error= mysql_bin_log.find_log_pos(&linfo, NullS, true);
-  if (error && error != LOG_INFO_EOF)
+  if (!logs.valid() && !logs.eof())
     return 1;
-  while (!error)
+  while (logs.valid())
   {
     bool matches;
-    if (gtid_info_collect_file_gtids(linfo.log_file_name, NULL, &wanted,
-                                     &matches))
+    if (gtid_info_collect_file_gtids(logs.name(), NULL, &wanted, &matches))
       return 1;
     if (matches)
     {
       if ((!first && out_str->append(',')) ||
-          gtid_info_json_append_quoted(out_str, linfo.log_file_name,
-                                       strlen(linfo.log_file_name)))
+          gtid_info_json_append_quoted(out_str, logs.name(),
+                                       strlen(logs.name())))
         return 1;
       first= false;
     }
-    error= mysql_bin_log.find_next_log(&linfo, true);
+    int error= logs.next();
     if (error != 0 && error != LOG_INFO_EOF)
       return 1;
   }
@@ -859,9 +834,7 @@ static int
 gtid_info_scan_file(const char *log_name, const rpl_gtid *wanted,
                     String *out_str, bool *found)
 {
-  const char *errmsg;
-  IO_CACHE log;
-  File file;
+  Gtid_binlog_reader reader;
   int read_error;
   Log_event *ev= NULL;
   Log_event *fde_ev= NULL;
@@ -883,11 +856,10 @@ gtid_info_scan_file(const char *log_name, const rpl_gtid *wanted,
   bzero(seen, sizeof(seen));
   bzero(&stats, sizeof(stats));
   server_version[0]= 0;
-  if ((file= open_binlog(&log, log_name, &errmsg)) < 0)
+  if (reader.open(current_thd, log_name))
     return 1;
 
-  while ((ev= Log_event::read_log_event(&log, &read_error, fdle,
-                                        opt_master_verify_checksum)))
+  while ((ev= reader.read(current_thd, fdle, &read_error)))
   {
     Log_event_type typ= ev->get_type_code();
 
@@ -947,7 +919,7 @@ gtid_info_scan_file(const char *log_name, const rpl_gtid *wanted,
         bzero(&stats, sizeof(stats));
         seen[typ]= true;
         gtid_info_note_event_stats(ev, &stats);
-        end_pos= my_b_tell(&log);
+        end_pos= reader.position();
         start_pos= end_pos - ev->data_written;
         commit_timestamp= ev->when;
         last_event_timestamp= ev->when;
@@ -961,7 +933,7 @@ gtid_info_scan_file(const char *log_name, const rpl_gtid *wanted,
       if (typ > UNKNOWN_EVENT && typ < ENUM_END_EVENT)
         seen[typ]= true;
       gtid_info_note_event_stats(ev, &stats);
-      end_pos= my_b_tell(&log);
+      end_pos= reader.position();
       last_event_timestamp= ev->when;
       ++event_count;
     }
@@ -982,8 +954,6 @@ gtid_info_scan_file(const char *log_name, const rpl_gtid *wanted,
 
   delete ev;
   delete fde_ev;
-  end_io_cache(&log);
-  mysql_file_close(file, MYF(MY_WME));
   return ret;
 }
 
@@ -991,24 +961,23 @@ gtid_info_scan_file(const char *log_name, const rpl_gtid *wanted,
 static int
 gtid_info_full_scan(const rpl_gtid *wanted, String *out_str)
 {
-  LOG_INFO linfo;
-  int error;
+  Gtid_binlog_file_iterator logs(current_thd);
   int ret;
   bool found= false;
 
-  if ((error= mysql_bin_log.find_log_pos(&linfo, NullS, true)))
+  if (!logs.valid())
   {
-    if (error == LOG_INFO_EOF)
+    if (logs.eof())
       return gtid_info_json_not_present(out_str, wanted);
     return 1;
   }
 
   for (;;)
   {
-    if ((ret= gtid_info_scan_file(linfo.log_file_name, wanted, out_str,
-                                  &found)) || found)
+    if ((ret= gtid_info_scan_file(logs.name(), wanted, out_str, &found)) ||
+        found)
       return ret;
-    error= mysql_bin_log.find_next_log(&linfo, true);
+    int error= logs.next();
     if (error == LOG_INFO_EOF)
       break;
     if (error)
@@ -1029,12 +998,6 @@ gtid_info_to_json(const char *gtid_str, size_t gtid_len, String *out_str)
   if (!mysql_bin_log.is_open())
   {
     my_error(ER_NO_BINARY_LOGGING, MYF(0));
-    return 1;
-  }
-
-  if (opt_binlog_engine_hton)
-  {
-    my_error(ER_NOT_AVAILABLE_WITH_ENGINE_BINLOG, MYF(0), "GTID_INFO()");
     return 1;
   }
 
@@ -1073,9 +1036,7 @@ static int
 gtid_at_scan_file(const char *log_name, my_time_t target_time,
                   Gtid_at_domain_vec *state, bool *past_target)
 {
-  const char *errmsg;
-  IO_CACHE log;
-  File file;
+  Gtid_binlog_reader reader;
   int read_error;
   Log_event *ev= NULL;
   Log_event *fde_ev= NULL;
@@ -1084,11 +1045,10 @@ gtid_at_scan_file(const char *log_name, my_time_t target_time,
   int ret= 0;
 
   *past_target= false;
-  if ((file= open_binlog(&log, log_name, &errmsg)) < 0)
+  if (reader.open(current_thd, log_name))
     return 1;
 
-  while ((ev= Log_event::read_log_event(&log, &read_error, fdle,
-                                        opt_master_verify_checksum)))
+  while ((ev= reader.read(current_thd, fdle, &read_error)))
   {
     Log_event_type typ= ev->get_type_code();
 
@@ -1142,8 +1102,6 @@ gtid_at_scan_file(const char *log_name, my_time_t target_time,
 
   delete ev;
   delete fde_ev;
-  end_io_cache(&log);
-  mysql_file_close(file, MYF(MY_WME));
   return ret;
 }
 
@@ -1152,10 +1110,9 @@ static int
 gtid_at_to_string(THD *thd, const char *datetime_str, size_t datetime_len,
                   String *out_str)
 {
-  LOG_INFO linfo;
+  Gtid_binlog_file_iterator logs(thd);
   Gtid_at_domain_vec state;
   my_time_t target_time;
-  int error;
 
   if (!mysql_bin_log.is_open())
   {
@@ -1163,18 +1120,12 @@ gtid_at_to_string(THD *thd, const char *datetime_str, size_t datetime_len,
     return 1;
   }
 
-  if (opt_binlog_engine_hton)
-  {
-    my_error(ER_NOT_AVAILABLE_WITH_ENGINE_BINLOG, MYF(0), "GTID_AT()");
-    return 1;
-  }
-
   if (gtid_at_parse_datetime(thd, datetime_str, datetime_len, &target_time))
     return 1;
 
-  if ((error= mysql_bin_log.find_log_pos(&linfo, NullS, true)))
+  if (!logs.valid())
   {
-    if (error == LOG_INFO_EOF)
+    if (logs.eof())
     {
       out_str->length(0);
       return 0;
@@ -1185,12 +1136,11 @@ gtid_at_to_string(THD *thd, const char *datetime_str, size_t datetime_len,
   for (;;)
   {
     bool past_target;
-    if (gtid_at_scan_file(linfo.log_file_name, target_time, &state,
-                          &past_target))
+    if (gtid_at_scan_file(logs.name(), target_time, &state, &past_target))
       return 1;
     if (past_target)
       break;
-    error= mysql_bin_log.find_next_log(&linfo, true);
+    int error= logs.next();
     if (error == LOG_INFO_EOF)
       break;
     if (error)

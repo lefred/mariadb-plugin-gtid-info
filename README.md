@@ -5,7 +5,7 @@
 The `gtid_info` plugin registers eight SQL functions:
 
 * `GTID_INFO(gtid)` returns a JSON document describing where one MariaDB GTID
-  is stored in the retained file binary logs.
+  is stored in the retained binary logs.
 * `GTID_AT(datetime)` returns the GTID position (GTID Set) visible at a point in time.
 * `BINLOG_GTID_SET(filename)` returns the GTIDs stored in one retained binary
   log file.
@@ -36,8 +36,8 @@ SELECT GTID_FLASHBACK_TO('0-1-123');
 SELECT GTID_FLASHBACK_TO('0-1-123', 1);
 ```
 
-The function requires file binary logging. It is not available when binary
-logging is disabled or when an engine-backed binary log is configured.
+The functions require binary logging. Both traditional file binary logs and
+`--binlog-storage-engine=innodb` are supported.
 
 ## Binlog GTID mapping
 
@@ -46,6 +46,10 @@ actual `Gtid` events as a comma-separated set in event order. The filename may
 be the value shown by `SHOW BINARY LOGS` or the indexed path returned by
 `GTID_INFO()`. Only files currently present in the server's binary-log index
 can be read.
+
+With `--binlog-storage-engine=innodb`, filenames are logical binlog names. The
+plugin enumerates and reads them through MariaDB's storage-engine binlog API;
+it does not access InnoDB's underlying binlog tablespace files directly.
 
 `BINLOG_GTID_SET_GAPS(filename)` groups the file's GTIDs by domain and server,
 sorts their sequence numbers, and returns every missing value between observed
@@ -72,7 +76,7 @@ SELECT GTID_SET_BINLOGS('0-1-2,1-1-4');
 
 ## Lookup behavior
 
-`GTID_INFO()` scans retained local binary log files and reads binlog events
+`GTID_INFO()` scans retained local binary logs and reads binlog events
 until it finds the requested GTID event. The implementation is deliberately
 self-contained in the plugin and does not use the binary log GTID index.
 
@@ -83,7 +87,7 @@ start position, while keeping this plugin responsible only for SQL function
 registration and JSON formatting.
 
 `"present": false` means the GTID was not found in the currently retained
-local binary log files. It may have been purged, may have been generated on a
+local binary logs. It may have been purged, may have been generated on a
 different server, or may never have existed locally.
 
 
@@ -290,5 +294,8 @@ Run the plugin MTR suite:
 
 ```sh
 perl mariadb-test-run.pl \
-  --suite=gtid_info basic 
+  --suite=gtid_info
 ```
+
+The `basic` test uses file binary logs and the `engine` test uses
+`--binlog-storage-engine=innodb`.

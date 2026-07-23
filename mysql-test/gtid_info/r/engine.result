@@ -1,0 +1,54 @@
+SELECT LCASE(@@global.binlog_storage_engine) = 'innodb'
+       AS using_innodb_binlog;
+using_innodb_binlog
+1
+CREATE TABLE engine_t (a INT PRIMARY KEY, b VARCHAR(20));
+INSERT INTO engine_t VALUES (1, 'anchor');
+SET @anchor= @@last_gtid;
+FLUSH NO_WRITE_TO_BINLOG BINARY LOGS;
+INSERT INTO engine_t VALUES (2, 'undo');
+SET @latest= @@last_gtid;
+SET @anchor_info= GTID_INFO(@anchor);
+SET @latest_info= GTID_INFO(@latest);
+SET @anchor_log= JSON_VALUE(@anchor_info, '$.binlog');
+SET @latest_log= JSON_VALUE(@latest_info, '$.binlog');
+SELECT JSON_VALUE(@anchor_info, '$.present') = 1
+AS engine_gtid_info_present;
+engine_gtid_info_present
+1
+SELECT @anchor_log <> @latest_log AS engine_rotation_visible;
+engine_rotation_visible
+1
+SELECT LOCATE(@latest, BINLOG_GTID_SET(@latest_log)) > 0
+AS engine_binlog_gtid_set;
+engine_binlog_gtid_set
+1
+SELECT BINLOG_GTID_SET_GAPS(@latest_log) = ''
+       AS engine_binlog_gtid_gaps;
+engine_binlog_gtid_gaps
+1
+SELECT LOCATE(@latest, BINLOG_GTID_SET_RANGES(@latest_log)) > 0
+AS engine_binlog_gtid_ranges;
+engine_binlog_gtid_ranges
+1
+SELECT JSON_LENGTH(GTID_SET_BINLOGS(CONCAT(@anchor, ',', @latest))) = 2
+AS engine_gtid_set_binlogs;
+engine_gtid_set_binlogs
+1
+SET @commit_time=
+FROM_UNIXTIME(CAST(JSON_VALUE(@latest_info, '$.commit_timestamp')
+AS UNSIGNED));
+SELECT LOCATE(@latest, GTID_AT(@commit_time)) > 0 AS engine_gtid_at;
+engine_gtid_at
+1
+SET @flashback= GTID_FLASHBACK(@latest);
+SELECT LOCATE('DELETE FROM `test`.`engine_t` WHERE `a` <=> 2',
+@flashback) > 0 AS engine_gtid_flashback;
+engine_gtid_flashback
+1
+SET @flashback_to= GTID_FLASHBACK_TO(@anchor);
+SELECT LOCATE('DELETE FROM `test`.`engine_t` WHERE `a` <=> 2',
+@flashback_to) > 0 AS engine_gtid_flashback_to;
+engine_gtid_flashback_to
+1
+DROP TABLE engine_t;

@@ -46,6 +46,7 @@
 #include "rpl_constants.h"
 #include "rpl_gtid.h"
 #include "gtid_flashback.h"
+#include "gtid_binlog_reader.h"
 
 
 #ifdef HAVE_REPLICATION
@@ -721,9 +722,7 @@ static int
 gtid_flashback_scan_file(THD *thd, const char *log_name, const rpl_gtid *wanted,
                          String *out_str, bool *found)
 {
-  const char *errmsg;
-  IO_CACHE log;
-  File file;
+  Gtid_binlog_reader reader;
   int read_error;
   Log_event *ev= NULL;
   Log_event *fde_ev= NULL;
@@ -736,11 +735,10 @@ gtid_flashback_scan_file(THD *thd, const char *log_name, const rpl_gtid *wanted,
   int ret= 0;
 
   *found= false;
-  if ((file= open_binlog(&log, log_name, &errmsg)) < 0)
+  if (reader.open(thd, log_name))
     return 1;
 
-  while ((ev= Log_event::read_log_event(&log, &read_error, fdle,
-                                        opt_master_verify_checksum)))
+  while ((ev= reader.read(thd, fdle, &read_error)))
   {
     Log_event_type typ= ev->get_type_code();
 
@@ -830,8 +828,6 @@ gtid_flashback_scan_file(THD *thd, const char *log_name, const rpl_gtid *wanted,
   delete ev;
   delete fde_ev;
   gtid_flashback_free_collected(&tables, &events);
-  end_io_cache(&log);
-  mysql_file_close(file, MYF(MY_WME));
   return ret;
 }
 
@@ -839,14 +835,13 @@ gtid_flashback_scan_file(THD *thd, const char *log_name, const rpl_gtid *wanted,
 static int
 gtid_flashback_full_scan(THD *thd, const rpl_gtid *wanted, String *out_str)
 {
-  LOG_INFO linfo;
-  int error;
+  Gtid_binlog_file_iterator logs(thd);
   int ret;
   bool found= false;
 
-  if ((error= mysql_bin_log.find_log_pos(&linfo, NullS, true)))
+  if (!logs.valid())
   {
-    if (error == LOG_INFO_EOF)
+    if (logs.eof())
     {
       my_error(ER_KEY_NOT_FOUND, MYF(0), "GTID");
       return 1;
@@ -856,10 +851,10 @@ gtid_flashback_full_scan(THD *thd, const rpl_gtid *wanted, String *out_str)
 
   for (;;)
   {
-    if ((ret= gtid_flashback_scan_file(thd, linfo.log_file_name, wanted, out_str,
+    if ((ret= gtid_flashback_scan_file(thd, logs.name(), wanted, out_str,
                                        &found)) || found)
       return ret;
-    error= mysql_bin_log.find_next_log(&linfo, true);
+    int error= logs.next();
     if (error == LOG_INFO_EOF)
       break;
     if (error)
@@ -960,9 +955,7 @@ gtid_flashback_to_scan_file(const char *log_name, const rpl_gtid *target,
                             bool *found_anchor, bool *after_anchor,
                             bool *any_group, bool *reached_upper, bool *done)
 {
-  const char *errmsg;
-  IO_CACHE log;
-  File file;
+  Gtid_binlog_reader reader;
   int read_error;
   Log_event *ev= NULL;
   Log_event *fde_ev= NULL;
@@ -972,11 +965,10 @@ gtid_flashback_to_scan_file(const char *log_name, const rpl_gtid *target,
   bool have_rows= false;
   int ret= 0;
 
-  if ((file= open_binlog(&log, log_name, &errmsg)) < 0)
+  if (reader.open(current_thd, log_name))
     return 1;
 
-  while ((ev= Log_event::read_log_event(&log, &read_error, fdle,
-                                        opt_master_verify_checksum)))
+  while ((ev= reader.read(current_thd, fdle, &read_error)))
   {
     Log_event_type typ= ev->get_type_code();
 
@@ -1074,8 +1066,6 @@ gtid_flashback_to_scan_file(const char *log_name, const rpl_gtid *target,
 
   delete ev;
   delete fde_ev;
-  end_io_cache(&log);
-  mysql_file_close(file, MYF(MY_WME));
   return ret;
 }
 
@@ -1084,8 +1074,7 @@ static int
 gtid_flashback_to_full_scan(THD *thd, const rpl_gtid *target,
                             const rpl_gtid *upper, String *out_str)
 {
-  LOG_INFO linfo;
-  int error;
+  Gtid_binlog_file_iterator logs(thd);
   int ret;
   bool found_anchor= false;
   bool after_anchor= false;
@@ -1095,22 +1084,22 @@ gtid_flashback_to_full_scan(THD *thd, const rpl_gtid *target,
   Gtid_flashback_table_vec tables;
   Gtid_flashback_event_vec events;
 
-  if ((error= mysql_bin_log.find_log_pos(&linfo, NullS, true)))
+  if (!logs.valid())
   {
-    if (error == LOG_INFO_EOF)
+    if (logs.eof())
       my_error(ER_KEY_NOT_FOUND, MYF(0), "GTID");
     return 1;
   }
 
   for (;;)
   {
-    ret= gtid_flashback_to_scan_file(linfo.log_file_name, target, upper,
+    ret= gtid_flashback_to_scan_file(logs.name(), target, upper,
                                      &tables, &events, &found_anchor,
                                      &after_anchor, &any_group,
                                      &reached_upper, &done);
     if (ret || done)
       break;
-    error= mysql_bin_log.find_next_log(&linfo, true);
+    int error= logs.next();
     if (error == LOG_INFO_EOF)
       break;
     if (error)
@@ -1241,12 +1230,6 @@ gtid_flashback_to_sql(THD *thd, const char *gtid_str, size_t gtid_len,
     return 1;
   }
 
-  if (opt_binlog_engine_hton)
-  {
-    my_error(ER_NOT_AVAILABLE_WITH_ENGINE_BINLOG, MYF(0), "GTID_FLASHBACK()");
-    return 1;
-  }
-
   if (!(gtid_list= gtid_parse_string_to_list(gtid_str, gtid_len, &gtid_count)))
   {
     my_error(ER_INCORRECT_GTID_STATE, MYF(0));
@@ -1279,13 +1262,6 @@ gtid_flashback_suffix_to_sql(THD *thd, const char *gtid_str, size_t gtid_len,
   if (!mysql_bin_log.is_open())
   {
     my_error(ER_NO_BINARY_LOGGING, MYF(0));
-    return 1;
-  }
-
-  if (opt_binlog_engine_hton)
-  {
-    my_error(ER_NOT_AVAILABLE_WITH_ENGINE_BINLOG, MYF(0),
-             "GTID_FLASHBACK_TO()");
     return 1;
   }
 
