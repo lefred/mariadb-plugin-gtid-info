@@ -1,0 +1,26 @@
+name: Build and package GTID-INFO plugin
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    uses: lefred/mariadb-plugin-ci/.github/workflows/build-plugin.yml@v1
+    with:
+      plugin_name: gtid-info
+      plugin_directory: gtid_info
+      build_target: gtid_info
+      plugin_library: gtid_info.so
+      cmake_options: -DPLUGIN_DATE_EXTRA=DYNAMIC
+      test_suite: gtid_info
+      run_tests: ${{ startsWith(github.ref, 'refs/tags/v') }}
