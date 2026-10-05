@@ -8,7 +8,7 @@ cmake_minimum_required(VERSION 3.12)
 
 project(disk_size_info)
 
-set(PLUGIN_NAME "gtif_info")
+set(PLUGIN_NAME "gtid_info")
 set(PLUGIN_AUTHOR "lefred")
 set(PLUGIN_VERSION "0.2.2")
 set(PLUGIN_HEX_VERSION "0x000202")
