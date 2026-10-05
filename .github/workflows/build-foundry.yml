@@ -1,0 +1,23 @@
+name: Build and package GTID_INFO plugin
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    uses: lefred/mariadb-plugin-ci/.github/workflows/build-plugin-new.yml@main
+    with:
+       mariadb_versions: 74647
+       test_suites: gtid_info
+       #extra_packages_deb: libcurl-dev
+       #extra_packages_rpm: libcurl-devel 

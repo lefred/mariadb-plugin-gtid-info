@@ -1602,16 +1602,16 @@ maria_declare_plugin(gtid_info)
 {
   MYSQL_DAEMON_PLUGIN,
   &gtid_info_plugin,
-  "gtid_info",
-  "lefred",
+  PLUGIN_NAME,
+  PLUGIN_AUTHOR,
   "GTID binary log information function",
-  PLUGIN_LICENSE_GPL,
+  PLUGIN_LICENSE,
   gtid_info_plugin_init,
   gtid_info_plugin_deinit,
-  0x0100,
+  PLUGIN_HEX_VERSION,,
   NULL,
   NULL,
-  "0.2.0",
+  PLUGIN_VERSION,
   MariaDB_PLUGIN_MATURITY_BETA
 }
 maria_declare_plugin_end;
