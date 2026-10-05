@@ -1608,7 +1608,7 @@ maria_declare_plugin(gtid_info)
   PLUGIN_LICENSE,
   gtid_info_plugin_init,
   gtid_info_plugin_deinit,
-  PLUGIN_HEX_VERSION,,
+  PLUGIN_HEX_VERSION,
   NULL,
   NULL,
   PLUGIN_VERSION,
