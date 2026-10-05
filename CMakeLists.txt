@@ -54,6 +54,7 @@ elseif(COMMAND MYSQL_ADD_PLUGIN)
     # Legacy MYSQL_ADD_PLUGIN does not, so provide them explicitly.
     #
     target_compile_definitions(${PLUGIN_NAME} PRIVATE
+        PLUGIN_NAME="${PLUGIN_NAME}"
         PLUGIN_AUTHOR="${PLUGIN_AUTHOR}"
         PLUGIN_DESCRIPTION="${PLUGIN_DESCRIPTION}"
         PLUGIN_VERSION="${PLUGIN_VERSION}"
