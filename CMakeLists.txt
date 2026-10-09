@@ -6,7 +6,7 @@
 
 cmake_minimum_required(VERSION 3.12)
 
-project(disk_size_info)
+project(gtid_info)
 
 set(PLUGIN_NAME "gtid_info")
 set(PLUGIN_AUTHOR "lefred")
