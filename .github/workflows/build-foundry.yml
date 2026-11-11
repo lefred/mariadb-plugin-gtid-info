@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   build:
-    uses: lefred/mariadb-plugin-ci/.github/workflows/build-plugin-new.yml@main
+    uses: lefred/mariadb-plugin-ci/.github/workflows/build-plugin-new.yml@v1
     with:
        mariadb_versions: |
          74647
