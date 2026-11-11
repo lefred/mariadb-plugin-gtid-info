@@ -21,8 +21,8 @@ jobs:
          77519
          77521
          77522
-         77100
-         77144
+         77676
+         77649
        #test_suites: gtid_info
        #extra_packages_deb: libcurl-dev
        #extra_packages_rpm: libcurl-devel 

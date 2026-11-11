@@ -3,7 +3,7 @@ name: Build and package GTID-INFO plugin
 on:
   push:
     branches:
-      - main
+      - mtr
     tags:
       - "v*"
 
