@@ -18,8 +18,6 @@ jobs:
     uses: lefred/mariadb-plugin-ci/.github/workflows/build-plugin-new.yml@v1
     with:
        mariadb_versions: |
-         77519
-         77521
          77522
          77676
          77649

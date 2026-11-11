@@ -47,6 +47,7 @@
 #include "rpl_gtid.h"
 #include "gtid_flashback.h"
 #include "gtid_binlog_reader.h"
+#include "gtid_info_compat.h"
 
 
 #ifdef HAVE_REPLICATION
@@ -289,8 +290,8 @@ gtid_flashback_col_is_unsigned(table_def *td, uint col)
 
 static bool
 gtid_flashback_append_value(String *str, table_def *td, uint col,
-                            const uchar *value, bool is_null,
-                            const uchar **next_value)
+                            const uchar *value, const uchar *end,
+                            bool is_null, const uchar **next_value)
 {
   enum_field_types type= td->type(col);
   uint16 meta= td->field_metadata(col);
@@ -302,9 +303,16 @@ gtid_flashback_append_value(String *str, table_def *td, uint col,
     return str->append(STRING_WITH_LEN("NULL"));
   }
 
-  length= td->calc_field_size(col, const_cast<uchar *>(value));
+  length= gtid_info_compat::calc_field_size(
+    td, col, const_cast<uchar *>(value), static_cast<size_t>(end - value));
   if (length == ~(uint32) 0)
     return gtid_flashback_append_unsupported(type);
+  if (length > static_cast<size_t>(end - value))
+  {
+    my_error(ER_MASTER_FATAL_ERROR_READING_BINLOG, MYF(0),
+             "Corrupt row event in GTID_FLASHBACK()");
+    return true;
+  }
 
   *next_value= value + length;
 
@@ -575,7 +583,8 @@ gtid_flashback_append_row_values(String *str, table_def *td,
                       str->append('='))))
       return true;
 
-    if (gtid_flashback_append_value(str, td, i, value, is_null, &new_value))
+    if (gtid_flashback_append_value(str, td, i, value, end, is_null,
+                                    &new_value))
       return true;
     if (new_value > end)
     {
