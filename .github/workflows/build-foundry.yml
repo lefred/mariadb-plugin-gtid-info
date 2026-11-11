@@ -18,10 +18,14 @@ jobs:
     uses: lefred/mariadb-plugin-ci/.github/workflows/build-plugin-new.yml@main
     with:
        mariadb_versions: |
-         74647
-         75263
-       test_suites: gtid_info
+         77519
+         77521
+         77522
+         77100
+         77144
+       #test_suites: gtid_info
        #extra_packages_deb: libcurl-dev
        #extra_packages_rpm: libcurl-devel 
        almalinux_version: "10"
        allow_partial_release: true
+       package_formats: tgz
